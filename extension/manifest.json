@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Intake Study Builder Agent",
+  "version": "1.0.0",
+  "description": "Builds a clinical study inside any eSource platform from an IR file, with a human gate for everything it is not sure about.",
+  "permissions": ["sidePanel", "activeTab", "scripting", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "side_panel": { "default_path": "panel/panel.html" },
+  "action": { "default_title": "Open the study builder agent" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": [
+        "core/lexicon.js",
+        "core/snapshot.js",
+        "core/actions.js",
+        "core/mapper.js",
+        "core/flows.js",
+        "core/verify.js",
+        "core/orchestrator.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+}

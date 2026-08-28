@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ClinCapture Vista — Mock B</title>
+<style>
+  :root { --ink:#1c2431; --paper:#f4f2ec; --card:#ffffff; --line:#d8d2c4; --pri:#7c4dbc; --acc:#2f6f4f; --warn:#a33; }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 14px/1.5 Georgia, 'Times New Roman', serif; background: var(--paper); color: var(--ink); }
+  .topbar { background: var(--ink); color:#f2ecdc; display:flex; align-items:center; gap:18px; padding: 10px 18px; }
+  .topbar .logo { font-weight:bold; letter-spacing:.05em; }
+  .topbar nav { display:flex; gap:4px; }
+  .topbar nav [role="button"] { padding:4px 10px; border-radius:4px; cursor:pointer; color:#cfc8b8; }
+  .topbar nav [role="button"].on { background:#3a4761; color:#fff; }
+  main { max-width: 1180px; margin: 0 auto; padding: 22px 18px 80px; }
+  h1 { font-size: 22px; margin: 4px 0 14px; }
+  h2 { font-size: 17px; }
+  .cardgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:12px; }
+  .enc-card, .inst-card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 14px; }
+  .enc-card [role="button"].title { color:var(--pri); font-size:16px; cursor:pointer; text-decoration:underline; }
+  .chip { display:inline-block; font-size:11px; font-family: sans-serif; padding:1px 8px; border-radius:9px; background:#e5e0d2; margin-left:6px;}
+  .chip.locked { background:#d9ecdf; color:var(--acc); }
+  .rowbtns { margin-top:8px; display:flex; gap:6px; flex-wrap:wrap; }
+  [role="button"].btn, button.btn { font: 13px sans-serif; background:#efece2; border:1px solid var(--line); border-radius:5px; padding:5px 10px; cursor:pointer; display:inline-block; }
+  .btn.primary { background:var(--pri); border-color:var(--pri); color:#fff; }
+  .btn.go { background:var(--acc); border-color:var(--acc); color:#fff; }
+  .btn.quiet { background:transparent; }
+  .modal-back { position:fixed; inset:0; background:rgba(20,16,10,.45); display:flex; align-items:center; justify-content:center; }
+  .modal { background:var(--card); border-radius:10px; padding:18px 20px; width:430px; box-shadow:0 18px 50px rgba(0,0,0,.35); }
+  .modal label, .setup label { display:block; margin:10px 0 2px; font: 12px sans-serif; color:#5a5240; }
+  .modal input[type="text"], .modal input[type="number"], .setup input[type="text"], .setup select {
+    width:100%; padding:6px 8px; border:1px solid var(--line); border-radius:5px; font:13px sans-serif; background:#fff; }
+  .modal .foot { margin-top:14px; display:flex; gap:8px; justify-content:flex-end; }
+  .designer { display:grid; grid-template-columns: 205px 1fr 300px; gap:14px; }
+  .palette, .setup { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px 12px; align-self:start; }
+  .palette h3, .setup h3 { margin:2px 0 8px; font:bold 13px sans-serif; text-transform:uppercase; letter-spacing:.06em; color:#6b614c; }
+  .palette [role="button"] { display:block; padding:6px 8px; margin:3px 0; border:1px dashed var(--line); border-radius:5px; cursor:pointer; font:13px sans-serif; background:#faf8f2; }
+  .palette [role="button"]:hover { border-color:var(--pri); }
+  .palette .ghosty { color:#9b917c; }
+  .canvas { min-height:300px; }
+  .qcard { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px 14px; margin-bottom:10px; cursor:pointer; }
+  .qcard.sel { border-color:var(--pri); box-shadow:0 0 0 2px #e4d8f5; }
+  .qcard .qtitle { font-weight:bold; }
+  .qcard .qmeta { font:11px sans-serif; color:#8b806a; margin-left:8px; }
+  .qcard .qprev { margin-top:6px; }
+  .qcard .qprev input, .qcard .qprev select, .qcard .qprev textarea { font:13px sans-serif; padding:4px 6px; border:1px solid var(--line); border-radius:4px; }
+  .pillrow [role="button"] { display:inline-block; border:1px solid var(--line); border-radius:12px; padding:2px 12px; margin-right:6px; font:12px sans-serif; }
+  fieldset { border:1px solid var(--line); border-radius:6px; margin-top:12px; }
+  legend { font:bold 11px sans-serif; text-transform:uppercase; letter-spacing:.05em; color:#6b614c; padding:0 4px; }
+  .vrow { display:grid; grid-template-columns:1fr 1.4fr auto; gap:6px; margin-bottom:6px; align-items:end; }
+  .toolbar { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+  .toolbar .title { font-size:18px; font-weight:bold; }
+  .toolbar .spacer { flex:1; }
+  .toast { position:fixed; right:18px; bottom:18px; background:var(--ink); color:#f5efe0; padding:9px 16px; border-radius:7px; font:13px sans-serif; }
+  .crumb { font:12px sans-serif; color:#877c64; margin-bottom:8px; }
+  .empty { color:#9b917c; font-style:italic; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+'use strict';
+/*
+ * Mock B — "ClinCapture Vista". A deliberately different eSource surface for
+ * generalization testing: different words for everything (Encounters,
+ * Instruments, Questions, a Question Palette), different DOM (role=button
+ * divs, cards instead of tables, modal dialogs), different save flow
+ * ("Commit Changes", with a fake "Store Draft Locally" beside it), and a
+ * palette in a different order with different names. Same traps as Mock A:
+ * navigation discards the working copy, the fake save persists nothing,
+ * Lock refuses while dirty, and an inert import entry sits in the palette.
+ */
+let seq = 0;
+const nid = (p) => p + (++seq);
+
+const TYPES = [
+  { key: 'shortans', label: 'Short Answer',   canonical: 'text' },
+  { key: 'meas',     label: 'Measurement',    canonical: 'decimal' },
+  { key: 'yesno',    label: 'Yes or No',      canonical: 'boolean' },
+  { key: 'menu',     label: 'Selector Menu',  canonical: 'single_select' },
+  { key: 'day',      label: 'Day Picker',     canonical: 'date' },
+  { key: 'pickseveral', label: 'Pick Several', canonical: 'multi_select' },
+  { key: 'tick',     label: 'Single Tick',    canonical: 'checkbox' },
+  { key: 'tally',    label: 'Tally Counter',  canonical: 'integer' },
+  { key: 'moment',   label: 'Moment Picker',  canonical: 'datetime' },
+  { key: 'optbtn',   label: 'Option Buttons', canonical: 'radio' },
+  { key: 'longans',  label: 'Long Answer',    canonical: 'textarea' },
+  { key: 'clock',    label: 'Clock Reading',  canonical: 'time' },
+  { key: 'computed', label: 'Computed Value', canonical: 'calculated' },
+];
+const typeOf = (key) => TYPES.find((t) => t.key === key);
+const CODED = new Set(['menu', 'pickseveral', 'optbtn']);
+const RANGED = new Set(['tally', 'meas']);
+
+const state = {
+  study: { name: 'ABC-101', visits: [] },
+  route: { kind: 'timeline' },
+  modal: null,          // {kind:'encounter'|'instrument', draft:{}}
+  working: null,        // deep copy of instrument under design
+  workingVisitId: null,
+  dirty: false,
+  selectedQ: null,
+  toast: null,
+};
+
+const copy = (o) => JSON.parse(JSON.stringify(o));
+
+function resetAll() {
+  seq = 0;
+  state.study = { name: 'ABC-101', visits: [] };
+  state.route = { kind: 'timeline' };
+  state.modal = null; state.working = null; state.workingVisitId = null;
+  state.dirty = false; state.selectedQ = null; state.toast = null;
+  render();
+}
+
+// Navigation discards everything unsaved, without asking.
+function go(route) {
+  state.route = route;
+  state.modal = null; state.working = null; state.workingVisitId = null;
+  state.dirty = false; state.selectedQ = null; state.toast = null;
+  render();
+}
+
+function toast(msg) { state.toast = msg; render(); }
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+function el(tag, attrs = {}, kids = []) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'onclick') n.addEventListener('click', v);
+    else if (k === 'oninput') n.addEventListener('input', v);
+    else if (k === 'onchange') n.addEventListener('change', v);
+    else n.setAttribute(k, v);
+  }
+  for (const kid of kids) n.append(kid);
+  return n;
+}
+const btn = (label, cls, onclick) => el('div', { role: 'button', tabindex: '0', class: 'btn ' + cls, onclick }, [label]);
+
+// ── screens ──────────────────────────────────────────────────────────────────
+function render() {
+  const app = document.getElementById('app');
+  app.replaceChildren(chrome_(), el('main', {}, screen()), ...(state.toast ? [el('div', { class: 'toast', role: 'status' }, [state.toast])] : []), ...(state.modal ? [modal()] : []));
+}
+
+function chrome_() {
+  return el('div', { class: 'topbar' }, [
+    el('div', { class: 'logo' }, ['ClinCapture Vista']),
+    el('nav', { 'aria-label': 'Areas' }, [
+      el('div', { role: 'button' }, ['Participants']),
+      el('div', { role: 'button', class: 'on', 'aria-current': 'page' }, ['Study Setup']),
+      el('div', { role: 'button' }, ['Queries']),
+      el('div', { role: 'button' }, ['Exports']),
+    ]),
+    el('div', { style: 'margin-left:auto;font-size:13px' }, ['Protocol: ' + state.study.name]),
+  ]);
+}
+
+function screen() {
+  if (state.route.kind === 'timeline') return timeline();
+  if (state.route.kind === 'encounter') return encounter();
+  if (state.route.kind === 'designer') return designer();
+  return [el('p', {}, ['?'])];
+}
+
+function timeline() {
+  const kids = [el('h1', {}, ['Study Timeline'])];
+  const grid = el('div', { class: 'cardgrid' });
+  for (const v of state.study.visits) {
+    grid.append(el('div', { class: 'enc-card' }, [
+      el('div', { role: 'button', tabindex: '0', class: 'title', onclick: () => go({ kind: 'encounter', visitId: v.id }) }, [v.name]),
+      el('div', { style: 'font:12px sans-serif;color:#877c64;margin-top:4px' }, ['Study days ' + v.windowStart + ' through ' + v.windowEnd]),
+      el('div', { style: 'font:12px sans-serif;color:#877c64' }, [v.forms.length + ' instruments']),
+    ]));
+  }
+  if (!state.study.visits.length) grid.append(el('p', { class: 'empty' }, ['Nothing scheduled yet.']));
+  kids.push(grid);
+  kids.push(el('div', { style: 'margin-top:16px' }, [btn('New Encounter', 'primary', () => { state.modal = { kind: 'encounter', draft: { name: '', ws: '', we: '' } }; render(); })]));
+  return kids;
+}
+
+function encounter() {
+  const v = state.study.visits.find((x) => x.id === state.route.visitId);
+  if (!v) return [el('p', {}, ['Missing encounter.'])];
+  const kids = [
+    el('div', { class: 'crumb' }, ['Study Setup › Timeline › ' + v.name]),
+    el('div', {}, [btn('Back to Timeline', 'quiet', () => go({ kind: 'timeline' }))]),
+    el('h1', {}, [v.name + ' · Instruments']),
+  ];
+  const grid = el('div', { class: 'cardgrid' });
+  for (const f of v.forms) {
+    const actions = [];
+    if (f.status === 'draft') {
+      actions.push(btn('Open Designer', 'go', () => openDesigner(v.id, f.id)));
+      actions.push(btn('Lock', '', () => { f.status = 'locked'; render(); }));
+    } else {
+      actions.push(btn('New Revision', '', () => { f.status = 'draft'; f.rev += 1; render(); }));
+    }
+    actions.push(btn('Detach', 'quiet', () => {
+      if (f.status === 'locked') { toast('Locked instruments cannot be detached.'); return; }
+      v.forms = v.forms.filter((x) => x.id !== f.id); render();
+    }));
+    grid.append(el('div', { class: 'inst-card' }, [
+      el('div', {}, [
+        el('span', { style: 'font-weight:bold' }, [f.name]),
+        el('span', { class: 'chip' + (f.status === 'locked' ? ' locked' : '') }, [f.status === 'locked' ? 'Locked r' + f.rev : 'Draft r' + f.rev]),
+      ]),
+      el('div', { style: 'font:12px sans-serif;color:#877c64;margin-top:3px' }, [f.repeating ? 'Log style: many entries per encounter' : 'Single entry', ' · ', f.questions.length + ' questions']),
+      el('div', { class: 'rowbtns' }, actions),
+    ]));
+  }
+  if (!v.forms.length) grid.append(el('p', { class: 'empty' }, ['No instruments attached.']));
+  kids.push(grid);
+  kids.push(el('div', { style: 'margin-top:16px' }, [btn('Attach Instrument', 'primary', () => { state.modal = { kind: 'instrument', draft: { name: '', log: false } }; render(); })]));
+  return kids;
+}
+
+function modal() {
+  const m = state.modal;
+  const inner = el('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' });
+  if (m.kind === 'encounter') {
+    inner.append(
+      el('h2', {}, ['New Encounter']),
+      el('label', {}, ['Encounter Title', el('input', { type: 'text', value: m.draft.name, oninput: (e) => { m.draft.name = e.target.value; } })]),
+      el('label', {}, ['Opens On (Study Day)', el('input', { type: 'number', value: m.draft.ws, oninput: (e) => { m.draft.ws = e.target.value; } })]),
+      el('label', {}, ['Closes On (Study Day)', el('input', { type: 'number', value: m.draft.we, oninput: (e) => { m.draft.we = e.target.value; } })]),
+      el('div', { class: 'foot' }, [
+        btn('Dismiss', 'quiet', () => { state.modal = null; render(); }),
+        btn('Create Encounter', 'primary', () => {
+          if (!m.draft.name.trim()) return;
+          state.study.visits.push({ id: nid('e'), name: m.draft.name.trim(), windowStart: m.draft.ws, windowEnd: m.draft.we, forms: [] });
+          state.modal = null; render();
+        }),
+      ]),
+    );
+  } else if (m.kind === 'instrument') {
+    const v = state.study.visits.find((x) => x.id === state.route.visitId);
+    inner.append(
+      el('h2', {}, ['Attach Instrument']),
+      el('label', {}, ['Instrument Title', el('input', { type: 'text', value: m.draft.name, oninput: (e) => { m.draft.name = e.target.value; } })]),
+      el('label', {}, [
+        el('input', { type: 'checkbox', ...(m.draft.log ? { checked: '' } : {}), onchange: (e) => { m.draft.log = e.target.checked; }, style: 'width:auto;margin-right:6px' }),
+        'Collects many entries per encounter (log)',
+      ]),
+      el('div', { class: 'foot' }, [
+        btn('Dismiss', 'quiet', () => { state.modal = null; render(); }),
+        btn('Attach', 'primary', () => {
+          if (!m.draft.name.trim() || !v) return;
+          v.forms.push({ id: nid('i'), name: m.draft.name.trim(), repeating: m.draft.log, status: 'draft', rev: 1, questions: [] });
+          state.modal = null; render();
+        }),
+      ]),
+    );
+  }
+  return el('div', { class: 'modal-back' }, [inner]);
+}
+
+// ── designer ─────────────────────────────────────────────────────────────────
+function openDesigner(visitId, formId) {
+  const v = state.study.visits.find((x) => x.id === visitId);
+  const f = v && v.forms.find((x) => x.id === formId);
+  if (!f || f.status !== 'draft') return;
+  state.route = { kind: 'designer', visitId, formId };
+  state.working = copy(f);
+  state.workingVisitId = visitId;
+  state.dirty = false;
+  state.selectedQ = null;
+  state.toast = null;
+  render();
+}
+
+function commitWorking() {
+  const v = state.study.visits.find((x) => x.id === state.route.visitId);
+  if (!v || !state.working) return;
+  v.forms = v.forms.map((f) => (f.id === state.working.id ? copy(state.working) : f));
+  state.dirty = false;
+  toast('Changes committed.');
+}
+
+function designer() {
+  const v = state.study.visits.find((x) => x.id === state.route.visitId);
+  const w = state.working;
+  if (!v || !w) return [el('p', {}, ['Nothing open.'])];
+  const bar = el('div', { class: 'toolbar' }, [
+    btn('Back to Encounter', 'quiet', () => go({ kind: 'encounter', visitId: v.id })),
+    el('span', { class: 'title' }, [w.name]),
+    el('span', { style: 'font:12px sans-serif;color:#877c64' }, ['revision ' + w.rev + (state.dirty ? ' · uncommitted edits' : '')]),
+    el('span', { class: 'spacer' }, []),
+    // Sits where a save sits, looks like a save, is not a save.
+    btn('Store Draft Locally', '', () => toast('Draft stored on this device.')),
+    btn('Commit Changes', 'go', () => commitWorking()),
+    btn('Lock', 'primary', () => {
+      if (state.dirty) { toast('Commit your changes before locking.'); return; }
+      const f = v.forms.find((x) => x.id === w.id);
+      if (f) f.status = 'locked';
+      toast('Instrument locked.');
+    }),
+  ]);
+
+  const palette = el('aside', { class: 'palette' }, [el('h3', {}, ['Question Palette'])]);
+  for (const t of TYPES) {
+    palette.append(el('div', { role: 'button', tabindex: '0', onclick: () => addQuestion(t.key) }, [t.label]));
+  }
+  palette.append(el('div', { role: 'button', tabindex: '0', class: 'ghosty' }, ['Import From Template Library…']));
+
+  const canvas = el('section', { class: 'canvas' });
+  if (!w.questions.length) canvas.append(el('p', { class: 'empty' }, ['Pick a question style from the palette to begin.']));
+  for (const q of w.questions) canvas.append(qcard(q));
+
+  return [el('div', { class: 'crumb' }, ['Study Setup › ' + v.name + ' › ' + w.name]), bar, el('div', { class: 'designer' }, [palette, canvas, setupPanel()])];
+}
+
+function addQuestion(key) {
+  const q = { id: nid('q'), key, label: 'Untitled Question', required: false, min: '', max: '', units: '', precision: '', formula: '', values: [], vis: { mode: 'always', whenId: '', equals: '' } };
+  state.working.questions.push(q);
+  state.selectedQ = q.id;
+  state.dirty = true;
+  render();
+}
+
+function selQ() { return state.working && state.working.questions.find((q) => q.id === state.selectedQ); }
+function patchQ(patch) { const q = selQ(); if (q) { Object.assign(q, patch); state.dirty = true; render(); } }
+
+function qcard(q) {
+  const t = typeOf(q.key);
+  const meta = [t.label];
+  if (q.required) meta.push('required');
+  if (q.vis.mode === 'when') meta.push('conditional');
+  const card = el('div', { class: 'qcard' + (q.id === state.selectedQ ? ' sel' : ''), role: 'button', tabindex: '0', onclick: () => { state.selectedQ = q.id; render(); } }, [
+    el('div', {}, [el('span', { class: 'qtitle' }, [q.label + (q.required ? ' *' : '')]), el('span', { class: 'qmeta' }, [meta.join(' · ')])]),
+  ]);
+  card.append(el('div', { class: 'qprev' }, qPreview(q)));
+  return card;
+}
+
+/** Inert previews. Native input types where they exist; no listeners anywhere. */
+function qPreview(q) {
+  switch (q.key) {
+    case 'shortans': return [el('input', { type: 'text', 'aria-label': q.label })];
+    case 'longans': return [el('textarea', { rows: '2', 'aria-label': q.label })];
+    case 'tally': case 'meas': return [el('input', { type: 'number', 'aria-label': q.label, style: 'width:110px' }), el('span', { style: 'font:12px sans-serif;margin-left:5px' }, [q.units])];
+    case 'day': return [el('input', { type: 'date', 'aria-label': q.label })];
+    case 'clock': return [el('input', { type: 'time', 'aria-label': q.label })];
+    case 'moment': return [el('input', { type: 'datetime-local', 'aria-label': q.label })];
+    case 'yesno': return [el('span', { class: 'pillrow' }, [el('div', { role: 'button' }, ['Yes']), el('div', { role: 'button' }, ['No'])])];
+    case 'tick': return [el('span', {}, [el('input', { type: 'checkbox', 'aria-label': q.label }), ' ', q.label])];
+    case 'menu': { const s = el('select', { 'aria-label': q.label }); s.append(el('option', {}, ['(choose)'])); for (const val of q.values) s.append(el('option', {}, [val.label])); return [s]; }
+    case 'optbtn': case 'pickseveral': {
+      if (!q.values.length) return [el('span', { class: 'empty' }, ['No choices defined yet.'])];
+      const kind = q.key === 'optbtn' ? 'radio' : 'checkbox';
+      return q.values.map((val) => el('span', { style: 'margin-right:10px' }, [el('input', { type: kind, 'aria-label': q.label + ': ' + val.label }), ' ', val.label]));
+    }
+    case 'computed': return [el('input', { type: 'text', readonly: '', 'aria-label': q.label, value: q.formula ? '= ' + q.formula : '= (no rule)' })];
+  }
+  return [];
+}
+
+function setupPanel() {
+  const panel = el('aside', { class: 'setup' }, [el('h3', {}, ['Question Setup'])]);
+  const q = selQ();
+  if (!q) { panel.append(el('p', { class: 'empty' }, ['Select a question on the canvas.'])); return panel; }
+  panel.append(el('label', {}, ['Question Text', el('input', { type: 'text', value: q.label, oninput: (e) => patchQ({ label: e.target.value }) })]));
+  panel.append(el('label', {}, [
+    el('input', { type: 'checkbox', ...(q.required ? { checked: '' } : {}), onchange: (e) => patchQ({ required: e.target.checked }), style: 'width:auto;margin-right:6px' }),
+    'Must be answered',
+  ]));
+  if (RANGED.has(q.key)) {
+    const fs = el('fieldset', {}, [el('legend', {}, ['Accepted Range'])]);
+    fs.append(el('label', {}, ['Lowest Accepted', el('input', { type: 'text', value: q.min, oninput: (e) => patchQ({ min: e.target.value }) })]));
+    fs.append(el('label', {}, ['Highest Accepted', el('input', { type: 'text', value: q.max, oninput: (e) => patchQ({ max: e.target.value }) })]));
+    fs.append(el('label', {}, ['Unit of Measure', el('input', { type: 'text', value: q.units, oninput: (e) => patchQ({ units: e.target.value }) })]));
+    if (q.key === 'meas') fs.append(el('label', {}, ['Precision (digits)', el('input', { type: 'text', value: q.precision, oninput: (e) => patchQ({ precision: e.target.value }) })]));
+    panel.append(fs);
+  }
+  if (q.key === 'computed') {
+    panel.append(el('label', {}, ['Computation Rule', el('input', { type: 'text', value: q.formula, oninput: (e) => patchQ({ formula: e.target.value }) })]));
+  }
+  if (CODED.has(q.key)) {
+    const fs = el('fieldset', {}, [el('legend', {}, ['Answer Choices'])]);
+    q.values.forEach((val, i) => {
+      fs.append(el('div', { class: 'vrow' }, [
+        el('label', {}, ['Stored Code', el('input', { type: 'text', value: val.code, oninput: (e) => { val.code = e.target.value; state.dirty = true; } })]),
+        el('label', {}, ['Shown Text', el('input', { type: 'text', value: val.label, oninput: (e) => { val.label = e.target.value; state.dirty = true; } })]),
+        btn('Remove', 'quiet', () => { q.values.splice(i, 1); state.dirty = true; render(); }),
+      ]));
+    });
+    fs.append(btn('Add Choice', '', () => { q.values.push({ code: '', label: '' }); state.dirty = true; render(); }));
+    panel.append(fs);
+  }
+  const fs = el('fieldset', {}, [el('legend', {}, ['Display Rule'])]);
+  const cond = el('select', { onchange: (e) => patchQ({ vis: e.target.value === 'when' ? { mode: 'when', whenId: '', equals: '' } : { mode: 'always', whenId: '', equals: '' } }) });
+  cond.append(el('option', { value: 'always' }, ['Always displayed']));
+  const oWhen = el('option', { value: 'when' }, ['Displayed only when…']);
+  if (q.vis.mode === 'when') oWhen.setAttribute('selected', '');
+  cond.append(oWhen);
+  fs.append(el('label', {}, ['Display Condition', cond]));
+  if (q.vis.mode === 'when') {
+    const who = el('select', { onchange: (e) => { q.vis.whenId = e.target.value; state.dirty = true; render(); } });
+    who.append(el('option', { value: '' }, ['(pick a question)']));
+    for (const other of state.working.questions) {
+      if (other.id === q.id) continue;
+      const o = el('option', { value: other.id }, [other.label]);
+      if (other.id === q.vis.whenId) o.setAttribute('selected', '');
+      who.append(o);
+    }
+    fs.append(el('label', {}, ['Controlling Question', who]));
+    fs.append(el('label', {}, ['Required Answer', el('input', { type: 'text', value: q.vis.equals, oninput: (e) => { q.vis.equals = e.target.value; state.dirty = true; } })]));
+  }
+  panel.append(fs);
+  panel.append(el('div', { style: 'margin-top:14px' }, [btn('Remove Question', 'quiet', () => {
+    state.working.questions = state.working.questions.filter((x) => x.id !== state.selectedQ);
+    state.selectedQ = null; state.dirty = true; render();
+  })]));
+  return panel;
+}
+
+// ── read oracle (for humans checking their work; agents must not use it) ─────
+window.__readState = () => copy({
+  platform: 'esource-mock-b',
+  specVersion: 'esource-mock-b/1.0.0',
+  study: {
+    name: state.study.name,
+    visits: state.study.visits.map((v) => ({
+      name: v.name, windowStart: String(v.windowStart), windowEnd: String(v.windowEnd),
+      forms: v.forms.map((f) => ({
+        name: f.name, repeating: !!f.repeating, status: f.status === 'locked' ? 'active' : 'draft',
+        fields: f.questions.map((q) => ({
+          label: q.label, type: typeOf(q.key).canonical, required: !!q.required,
+          options: q.values.map((x) => ({ code: x.code, label: x.label })),
+          min: q.min, max: q.max, units: q.units, formula: q.formula,
+          skipLogic: q.vis.mode === 'when'
+            ? { whenFieldLabel: (f.questions.find((o) => o.id === q.vis.whenId) || {}).label || '', equalsValue: q.vis.equals }
+            : null,
+        })),
+      })),
+    })),
+  },
+});
+window.__resetState = resetAll;
+window.__exportState = () => JSON.stringify(window.__readState(), null, 2);
+window.__mockPlatform = 'esource-mock-b';
+
+if (new URLSearchParams(location.search).get('reset') === '1') resetAll();
+else render();
+</script>
+</body>
+</html>

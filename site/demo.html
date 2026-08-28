@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Demo — Intake Study Builder Agent</title>
+<style>
+:root {
+  --bg:#0f1216; --card:#171c22; --line:#262d36; --text:#dbe2ea; --muted:#8494a5;
+  --accent:#37b3a2; --warn:#e6b04a; --bad:#e06666; --good:#6fbf73;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif; }
+header.top { display:flex; align-items:center; gap:14px; padding:10px 18px; border-bottom:1px solid var(--line); background:#12161b; flex-wrap:wrap; }
+header.top a { color:var(--accent); text-decoration:none; }
+header.top .t { font-weight:700; font-size:15px; }
+.controls { display:flex; gap:8px; align-items:center; margin-left:auto; flex-wrap:wrap; }
+select, button { font:13px inherit; }
+select { background:var(--card); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 8px; }
+button { background:var(--accent); color:#06211d; font-weight:600; border:0; border-radius:6px; padding:7px 14px; cursor:pointer; }
+button:disabled { background:var(--line); color:var(--muted); cursor:default; }
+button.secondary { background:var(--card); color:var(--text); border:1px solid var(--line); }
+.layout { display:grid; grid-template-columns:minmax(0,1fr) 430px; height:calc(100vh - 55px); }
+iframe { width:100%; height:100%; border:0; background:#fff; }
+.panel { border-left:1px solid var(--line); overflow:auto; padding:12px 14px 40px; }
+.panel h2 { font-size:11px; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); margin:18px 0 8px; }
+.status { padding:7px 10px; background:var(--card); border:1px solid var(--line); border-radius:6px; }
+.counters { display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; }
+.counter { background:var(--card); border:1px solid var(--line); border-radius:6px; padding:6px 9px; }
+.counter b { font-size:15px; display:block; }
+.counter span { color:var(--muted); font-size:11px; }
+#gate { border:1px solid var(--warn); border-radius:8px; padding:10px; background:#1d1a12; margin-top:14px; }
+#gate .q { font-weight:600; margin-bottom:6px; }
+#gate .evidence { color:var(--muted); font-size:12px; margin:6px 0; white-space:pre-wrap; }
+#gate button { display:block; width:100%; text-align:left; margin:4px 0; background:var(--card); color:var(--text); border:1px solid var(--line); }
+#gate button:hover { border-color:var(--accent); }
+#gate .detail { color:var(--muted); font-weight:400; font-size:11px; }
+#log { max-height:300px; overflow:auto; background:var(--card); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font-family:ui-monospace,monospace; font-size:11px; }
+#log div { border-bottom:1px solid #1d232b; padding:2px 0; white-space:pre-wrap; }
+#log .escalate,#log .warn { color:var(--warn); } #log .error { color:var(--bad); } #log .verify { color:var(--good); } #log .statusmsg { color:#9fc3e8; }
+#report { background:var(--card); border:1px solid var(--line); border-radius:6px; padding:8px 10px; white-space:pre-wrap; font-family:ui-monospace,monospace; font-size:11px; }
+label.chk { color:var(--muted); font-size:12px; display:flex; gap:6px; align-items:center; }
+.muted { color:var(--muted); font-size:12px; }
+@media (max-width: 900px){ .layout { grid-template-columns:1fr; grid-template-rows: 55vh auto; height:auto; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <span class="t">Study Builder Agent · Live Demo</span>
+  <a href="index.html">About</a>
+  <a href="https://github.com/aravinds-kannappan/intake-ai-1a" target="_blank" rel="noreferrer">Repo</a>
+  <div class="controls">
+    <select id="mockSel" title="Which eSource mock to build into">
+      <option value="mock-a/index.html">Mock A (assignment platform)</option>
+      <option value="mock-a2/index.html">Mock A2 (mutated: renamed palette, moved save)</option>
+      <option value="mock-b/index.html">Mock B (my second platform)</option>
+    </select>
+    <label class="chk"><input type="checkbox" id="handsfree"> Hands-free (auto-accept suggestions)</label>
+    <button id="run">Run agent</button>
+    <button id="stop" class="secondary" disabled>Stop</button>
+    <button id="reset" class="secondary">Reset mock</button>
+  </div>
+</header>
+
+<div class="layout">
+  <iframe id="mock" src="mock-a/index.html"></iframe>
+  <div class="panel">
+    <div class="status" id="status">Idle. The full ABC-101 input (4 visits, 28 forms, 195 fields) is loaded. Press Run agent.</div>
+    <div id="gate" hidden></div>
+    <h2>Progress</h2>
+    <div class="counters" id="counters"></div>
+    <h2>Run report</h2>
+    <div id="report">No run yet.</div>
+    <div style="margin-top:8px; display:flex; gap:8px;">
+      <button id="dlReport" class="secondary">Download report</button>
+      <button id="dlTrace" class="secondary">Download trace</button>
+    </div>
+    <h2>Trace (newest first)</h2>
+    <div id="log"></div>
+    <p class="muted">This page runs the exact agent core that ships in the Chrome extension, against the mock in the iframe. It never reads the mock's state hooks or internals; everything happens through the page the way a user would see it.</p>
+  </div>
+</div>
+
+<script src="agent/lexicon.js"></script>
+<script src="agent/snapshot.js"></script>
+<script src="agent/actions.js"></script>
+<script src="agent/mapper.js"></script>
+<script src="agent/flows.js"></script>
+<script src="agent/verify.js"></script>
+<script src="agent/orchestrator.js"></script>
+<script>
+(function(){
+'use strict';
+const $ = (id)=>document.getElementById(id);
+const logEl = $('log');
+let running = false, controller = {}, lastResult = null;
+
+function line(cls, text){
+  const d = document.createElement('div');
+  d.className = cls; d.textContent = text;
+  logEl.prepend(d);
+  while (logEl.children.length > 500) logEl.lastChild.remove();
+}
+
+$('mockSel').addEventListener('change', ()=>{ if(!running) $('mock').src = $('mockSel').value; });
+$('reset').addEventListener('click', ()=>{ if(!running) $('mock').src = $('mockSel').value + '?reset=1&t=' + Date.now(); });
+
+function counters(r){
+  if(!r) return;
+  $('counters').innerHTML='';
+  const items = [
+    ['Visits', (r.visits.created + r.visits.existing) + '/' + r.visits.total],
+    ['Forms', (r.forms.created + r.forms.existing) + '/' + r.forms.total],
+    ['Fields', r.fields.built + '/' + r.fields.total],
+    ['Skip rules', r.skipRules.set + '/' + r.skipRules.total],
+    ['Clean audits', r.audit.formsClean + '/' + r.audit.formsAudited],
+    ['Open issues', String(r.audit.issuesOpen)],
+  ];
+  for(const [k,v] of items){
+    const d=document.createElement('div'); d.className='counter';
+    const b=document.createElement('b'); b.textContent=v;
+    const s=document.createElement('span'); s.textContent=k;
+    d.append(b,s); $('counters').appendChild(d);
+  }
+}
+
+function gate(item){
+  return new Promise((resolve)=>{
+    if($('handsfree').checked){
+      const pick = (item.suggestion && (item.options||[]).find(o=>o.id===item.suggestion)) || (item.options||[])[0];
+      line('escalate','gate (hands-free): '+item.question+'  ->  '+(pick?pick.label:'none'));
+      resolve({optionId: pick ? pick.id : null, by:'auto'});
+      return;
+    }
+    const g=$('gate'); g.hidden=false; g.innerHTML='';
+    const q=document.createElement('div'); q.className='q'; q.textContent=item.question; g.appendChild(q);
+    if(item.irPath){ const p=document.createElement('div'); p.className='evidence'; p.textContent=item.irPath; g.appendChild(p); }
+    if(item.evidence && item.evidence.length){ const ev=document.createElement('div'); ev.className='evidence'; ev.textContent=item.evidence.join('\n'); g.appendChild(ev); }
+    for(const opt of item.options||[]){
+      const b=document.createElement('button');
+      const s=document.createElement('span'); s.textContent=opt.label + (item.suggestion===opt.id?'  (suggested)':'');
+      b.appendChild(s);
+      if(opt.detail){ const dd=document.createElement('div'); dd.className='detail'; dd.textContent=opt.detail; b.appendChild(dd); }
+      b.addEventListener('click', ()=>{ g.hidden=true; resolve({optionId:opt.id, by:'human'}); });
+      g.appendChild(b);
+    }
+    g.scrollIntoView({block:'nearest'});
+  });
+}
+
+function summarize(result){
+  const r=result.report;
+  const bits=[
+    'Duration: '+Math.round(r.durationMs/1000)+'s'+(r.aborted?' (ended early)':''),
+    'Visits '+(r.visits.created+r.visits.existing)+'/'+r.visits.total+' · Forms '+(r.forms.created+r.forms.existing)+'/'+r.forms.total+' · Fields '+r.fields.built+'/'+r.fields.total,
+    'Skip rules verified '+r.skipRules.set+'/'+r.skipRules.total,
+    'Read-back audit: '+r.audit.formsClean+'/'+r.audit.formsAudited+' forms clean; issues found '+r.audit.issuesFound+', fixed '+r.audit.issuesFixed+', open '+r.audit.issuesOpen,
+    'Escalations: '+r.escalations.length+' · Warnings: '+r.warnings.length,
+  ];
+  if(result.calib && result.calib.typeMap){
+    bits.push('','Type map learned from this platform:');
+    for(const [c,m] of Object.entries(result.calib.typeMap)) bits.push('  '+c+' -> "'+m.entry+'" (confidence '+Number(m.confidence).toFixed(2)+')');
+    bits.push('Save control: "'+result.calib.saveControl+'" (verified by persistence probe)');
+  }
+  if(r.audit.openIssues.length){ bits.push('','Open issues:'); for(const i of r.audit.openIssues.slice(0,15)) bits.push('  '+i.irPath+': '+i.kind); }
+  if(r.warnings.length){ bits.push('','Warnings:'); for(const w of r.warnings.slice(0,15)) bits.push('  '+w); }
+  return bits.join('\n');
+}
+
+$('run').addEventListener('click', async ()=>{
+  if(running) return;
+  running = true; controller = {};
+  $('run').disabled = true; $('stop').disabled = false; $('mockSel').disabled = true;
+  logEl.innerHTML=''; $('report').textContent='running…';
+  const ir = await (await fetch('ir/abc-101-study.ir.json')).json();
+  const doc = $('mock').contentDocument;
+  const hooks = {
+    doc, controller,
+    onLog(e){ if(e.level==='action') line('action', e.message); else line(e.level==='status'?'statusmsg':e.level, e.level+'  '+e.message+(e.irPath?'   ['+e.irPath+']':'')); },
+    onProgress(p){ $('status').textContent = p.stage+': '+p.detail; counters(p.report); },
+    ask: gate,
+  };
+  lastResult = await window.IntakeAgent.orchestrator.run(ir, hooks);
+  counters(lastResult.report);
+  $('status').textContent = 'Done in '+Math.round(lastResult.report.durationMs/1000)+'s'+(lastResult.report.aborted?' (ended early)':'')+'. Click around the mock to inspect what was built.';
+  $('report').textContent = summarize(lastResult);
+  running = false; $('run').disabled=false; $('stop').disabled=true; $('mockSel').disabled=false; $('gate').hidden=true;
+});
+
+$('stop').addEventListener('click', ()=>{ if(controller.stop) controller.stop(); $('status').textContent='Stop requested; finishing the current step…'; });
+
+function download(name, obj){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(obj,null,2)],{type:'application/json'}));
+  a.download=name; a.click();
+}
+$('dlReport').addEventListener('click', ()=>lastResult&&download('run-report.json',{report:lastResult.report,calib:lastResult.calib}));
+$('dlTrace').addEventListener('click', ()=>lastResult&&download('run-trace.json',lastResult.trace));
+})();
+</script>
+</body>
+</html>

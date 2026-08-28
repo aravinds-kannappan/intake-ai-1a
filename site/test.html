@@ -1,0 +1,108 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>agent harness</title>
+<style>
+  body { margin: 0; font: 13px/1.4 monospace; display: grid; grid-template-columns: 1fr 480px; height: 100vh; }
+  iframe { width: 100%; height: 100%; border: 0; border-right: 2px solid #333; }
+  #panel { overflow: auto; padding: 8px; background: #111; color: #ddd; }
+  #log div { white-space: pre-wrap; border-bottom: 1px solid #222; padding: 1px 0; }
+  .escalate { color: #fb0; } .error { color: #f66; } .verify { color: #6f6; } .warn { color: #f96; }
+  button { margin: 4px 4px 8px 0; }
+</style>
+</head>
+<body>
+<iframe id="mock"></iframe>
+<script>
+  const which = new URLSearchParams(location.search).get('mock') || 'a';
+  document.getElementById('mock').src = { a: 'mock-a/index.html', a2: 'mock-a2/index.html', b: 'mock-b/index.html' }[which];
+</script>
+<div id="panel">
+  <button id="run">Run (auto-answer gate)</button>
+  <button id="state">Dump __readState diff</button>
+  <div id="status">idle</div>
+  <div id="log"></div>
+</div>
+<script src="agent/lexicon.js"></script>
+<script src="agent/snapshot.js"></script>
+<script src="agent/actions.js"></script>
+<script src="agent/mapper.js"></script>
+<script src="agent/flows.js"></script>
+<script src="agent/verify.js"></script>
+<script src="agent/orchestrator.js"></script>
+<script>
+const logEl = document.getElementById('log');
+function line(cls, text) {
+  const d = document.createElement('div');
+  d.className = cls; d.textContent = text;
+  logEl.appendChild(d);
+}
+let lastResult = null;
+document.getElementById('run').onclick = async () => {
+  logEl.innerHTML = '';
+  const ir = await (await fetch('ir/abc-101-study.ir.json')).json();
+  const doc = document.getElementById('mock').contentDocument;
+  document.getElementById('status').textContent = 'running…';
+  lastResult = await window.IntakeAgent.orchestrator.run(ir, {
+    doc,
+    onLog(e) { if (e.level !== 'action') line(e.level, e.level + ' ' + e.message + (e.irPath ? '  [' + e.irPath + ']' : '')); },
+    onProgress(p) { document.getElementById('status').textContent = p.stage + ': ' + p.detail; },
+    async ask(item) {
+      line('escalate', 'GATE(auto): ' + item.question);
+      const pick = (item.suggestion && item.options.find(o => o.id === item.suggestion)) || item.options[0];
+      line('escalate', '  -> ' + (pick ? pick.label : 'none'));
+      return { optionId: pick ? pick.id : null };
+    },
+  });
+  document.getElementById('status').textContent = 'done in ' + Math.round(lastResult.report.durationMs/1000) + 's';
+  line('info', JSON.stringify(lastResult.report, null, 1));
+  window.lastResult = lastResult;
+};
+document.getElementById('state').onclick = async () => {
+  const win = document.getElementById('mock').contentWindow;
+  const ir = await (await fetch('ir/abc-101-study.ir.json')).json();
+  const state = win.__readState();
+  window.__mockState = state;
+  line('info', 'diff summary: ' + JSON.stringify(diff(ir, state)));
+};
+// crude diff for my own verification only (the agent never sees this)
+function diff(ir, state) {
+  const out = { visits: [], forms: [], fields: [], details: [] };
+  for (const v of ir.visits) {
+    const sv = state.study.visits.find(x => x.name === v.name);
+    if (!sv) { out.visits.push('missing ' + v.name); continue; }
+    if (String(sv.windowStart) !== String(v.window_start_day) || String(sv.windowEnd) !== String(v.window_end_day))
+      out.details.push(v.name + ' window ' + sv.windowStart + '..' + sv.windowEnd);
+    for (const f of v.forms) {
+      const sf = sv.forms.find(x => x.name === f.name);
+      if (!sf) { out.forms.push('missing ' + v.name + '/' + f.name); continue; }
+      if (!!sf.repeating !== !!f.repeating) out.details.push(v.name + '/' + f.name + ' repeating=' + sf.repeating);
+      const els = sf.fields;
+      for (const fl of f.fields) {
+        const se = els.find(e => e.label === fl.label);
+        if (!se) { out.fields.push('missing ' + f.name + '/' + fl.label); continue; }
+        if (se.type !== fl.type) out.details.push(f.name + '/' + fl.label + ' type=' + se.type + ' want ' + fl.type);
+        if (!!se.required !== !!fl.required) out.details.push(f.name + '/' + fl.label + ' required=' + se.required);
+        if (fl.min != null && String(se.min) !== String(fl.min)) out.details.push(f.name + '/' + fl.label + ' min=' + JSON.stringify(se.min));
+        if (fl.max != null && String(se.max) !== String(fl.max)) out.details.push(f.name + '/' + fl.label + ' max=' + JSON.stringify(se.max));
+        if (fl.units != null && se.units !== fl.units) out.details.push(f.name + '/' + fl.label + ' units=' + JSON.stringify(se.units));
+        if (fl.formula != null && se.formula !== fl.formula) out.details.push(f.name + '/' + fl.label + ' formula=' + JSON.stringify(se.formula));
+        const wantOpts = (fl.options || []).map(o => o.code + '=' + o.label).join('|');
+        const gotOpts = (se.options || []).map(o => o.code + '=' + o.label).join('|');
+        if (wantOpts !== gotOpts) out.details.push(f.name + '/' + fl.label + ' values got ' + gotOpts + ' want ' + wantOpts);
+        if (fl.skip_logic) {
+          if (!se.skipLogic) out.details.push(f.name + '/' + fl.label + ' skip missing');
+          else if (se.skipLogic.whenFieldLabel !== fl.skip_logic.when_field_label || String(se.skipLogic.equalsValue) !== String(fl.skip_logic.equals_value))
+            out.details.push(f.name + '/' + fl.label + ' skip=' + se.skipLogic.whenFieldLabel + '=' + se.skipLogic.equalsValue);
+        } else if (se.skipLogic) out.details.push(f.name + '/' + fl.label + ' unexpected skip');
+      }
+      for (const se of els) if (!f.fields.find(fl => fl.label === se.label)) out.details.push(f.name + ' EXTRA element ' + JSON.stringify(se.label));
+    }
+  }
+  out.counts = { visitsMissing: out.visits.length, formsMissing: out.forms.length, fieldsMissing: out.fields.length, detailIssues: out.details.length };
+  return out;
+}
+</script>
+</body>
+</html>
