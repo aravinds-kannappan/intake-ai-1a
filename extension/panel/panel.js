@@ -58,7 +58,9 @@
     $('run').disabled = true;
     $('stop').disabled = false;
     $('status').textContent = 'running…';
-    const res = await chrome.tabs.sendMessage(tabId, { type: 'run', ir });
+    const apiKey = $('apiKey').value.trim();
+    const model = $('model').value.trim() || 'claude-sonnet-5';
+    const res = await chrome.tabs.sendMessage(tabId, { type: 'run', ir, apiKey, model });
     if (!res || !res.ok) {
       $('status').textContent = 'Could not start: ' + ((res && res.error) || 'unknown');
       $('run').disabled = false;

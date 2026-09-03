@@ -28,15 +28,22 @@
     // Group buttons by their nearest list-ish container.
     const groups = new Map();
     for (const a of buttons) {
-      // Start from the parent: a div[role=button] item must not match itself.
-      const container = a.el.parentElement && a.el.parentElement.closest('ul, ol, aside, nav, [role="list"], [role="toolbar"], section, div');
+      const container = a.el.parentElement && a.el.parentElement.closest('ul, ol, aside, nav, [role="list"], [role="toolbar"], [role="tablist"], section, div, menu');
       if (!container) continue;
       if (!groups.has(container)) groups.set(container, []);
       groups.get(container).push(a);
     }
-    const clusters = [...groups.entries()]
+    let clusters = [...groups.entries()]
       .map(([container, items]) => ({ container, items }))
       .filter((g) => g.items.length >= 6);
+
+    // Fallback: if no cluster >= 6, try >= 4 (smaller palettes exist)
+    if (clusters.length === 0) {
+      clusters = [...groups.entries()]
+        .map(([container, items]) => ({ container, items }))
+        .filter((g) => g.items.length >= 4);
+    }
+
     if (clusters.length === 0) return [];
     // Prefer the cluster whose context scores highest for the palette concept.
     clusters.sort((a, b) => paletteScore(b) - paletteScore(a));

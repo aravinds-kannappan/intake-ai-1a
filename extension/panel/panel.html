@@ -18,10 +18,10 @@
   </label>
   <div id="irSummary" class="muted">No input loaded.</div>
   <details id="llmBox">
-    <summary>Optional: Claude assist for escalations</summary>
+    <summary>Recommended: Claude assist for navigation &amp; escalations</summary>
     <label>Anthropic API key <input type="password" id="apiKey" placeholder="sk-ant-…"></label>
     <label>Model <input type="text" id="model" value="claude-sonnet-5"></label>
-    <div class="muted">When set, type-mapping escalations are first shown to Claude with the same evidence a human would see. Low-confidence answers still come to you. The key stays in extension storage.</div>
+    <div class="muted">When set, the agent uses Claude as a fallback when semantic scoring cannot identify the right controls — for type mapping, navigation, and finding elements on unfamiliar platforms. Low-confidence answers still come to you. The key stays in extension storage.</div>
   </details>
   <div class="btn-row">
     <button id="run" disabled>Run against this tab</button>

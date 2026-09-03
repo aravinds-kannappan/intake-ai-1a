@@ -4,8 +4,9 @@
  *
  *   snapshot -> rank candidates by concept -> act -> settle -> read back.
  *
- * A flow that cannot verify its own effect either tries the next candidate or
- * escalates to the human gate. Nothing is assumed persisted until read back.
+ * A flow that cannot verify its own effect either tries the next candidate,
+ * asks an LLM for guidance, or escalates to the human gate. Nothing is
+ * assumed persisted until read back.
  */
 (function () {
   'use strict';
@@ -23,13 +24,10 @@
   }
 
   function conceptPick(list, concepts, opts = {}) {
-    // concepts: [{name, weight}] summed; returns sorted positives with scores.
     const scored = list
       .map((a) => {
         let score = 0;
         for (const c of concepts) score += lexicon.scoreConcept(a.name, c.name) * (c.weight || 1);
-        // Tie-breaker only: a control with no conceptual match at all must not
-        // become a candidate just because it carries an explicit label.
         if (opts.preferExplicitLabel && hasExplicitLabel(a) && score > 0) score += 0.5;
         if (opts.avoidValuesSection) {
           score -= 0.75 * a.context.filter((c) => lexicon.scoreConcept(c, 'valuesSection') > 0).length;
@@ -48,7 +46,6 @@
     return t === l || t.replace(/\s*\*$/, '') === l;
   }
 
-  /** Find visible nodes whose direct text is the field label (with or without a required marker). */
   function findFieldText(doc, label) {
     const out = [];
     const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT);
@@ -74,6 +71,44 @@
     await actions.setText(ctx.doc, aff.el, value);
   }
 
+  // ── LLM-assisted fallback helpers ──────────────────────────────────────────
+
+  function pageContext(ctx) {
+    return snapMod.pageText(ctx.doc);
+  }
+
+  /**
+   * LLM-assisted affordance picker: when concept scoring yields no candidates,
+   * ask the LLM to choose from all visible affordances.
+   */
+  async function llmPick(ctx, intent, pool) {
+    if (!NS.llm || !NS.llm.isAvailable()) return null;
+    const result = await NS.llm.pickAffordance(intent, pool, pageContext(ctx));
+    if (result && result.index >= 0 && result.index < pool.length && result.confidence >= 0.5) {
+      ctx.log('info', 'LLM picked "' + pool[result.index].name + '" for: ' + intent + ' (confidence ' + result.confidence.toFixed(2) + ': ' + result.reason + ')', '');
+      return { aff: pool[result.index], score: result.confidence * 10 };
+    }
+    return null;
+  }
+
+  /**
+   * LLM-assisted navigation: when the agent can't find the target screen,
+   * ask the LLM for navigation hints.
+   */
+  async function llmNavigate(ctx, targetScreen) {
+    if (!NS.llm || !NS.llm.isAvailable()) return false;
+    const s = snap(ctx);
+    const result = await NS.llm.findNavigation(targetScreen, s.affordances, pageContext(ctx));
+    if (!result || !result.steps || result.steps.length === 0) return false;
+    for (const idx of result.steps.slice(0, 3)) {
+      if (idx >= 0 && idx < s.affordances.length) {
+        await clickAff(ctx, s.affordances[idx], 'LLM-guided navigation to ' + targetScreen);
+        await actions.settle(ctx.doc);
+      }
+    }
+    return true;
+  }
+
   // ── schedule screen ────────────────────────────────────────────────────────
 
   function addVisitCandidates(s) {
@@ -86,16 +121,66 @@
         lexicon.scoreConcept(c.aff.name, 'form') <= 0);
   }
 
+  /**
+   * Broader schedule detection: if we can't find an "add visit" button,
+   * look for any screen that mentions visits/schedule/study plan.
+   */
+  function looksLikeScheduleScreen(s) {
+    if (addVisitCandidates(s).length > 0) return true;
+    // Check if any affordance context mentions schedule/visit/study plan
+    for (const a of s.affordances) {
+      const ctx = a.context.join(' ');
+      if (lexicon.scoreConcept(ctx, 'schedule') > 2 || lexicon.scoreConcept(ctx, 'visit') > 2) {
+        if (a.kind === 'button' && lexicon.scoreConcept(a.name, 'add') > 0) return true;
+      }
+    }
+    return false;
+  }
+
   async function ensureScheduleScreen(ctx) {
     let s = snap(ctx);
     if (addVisitCandidates(s).length > 0) return true;
-    // Try navigation affordances that smell like the study plan / schedule.
+
+    // Strategy 1: Try concept-scored navigation affordances
     const navs = conceptPick(buttons(s), [{ name: 'schedule' }, { name: 'visit', weight: 0.5 }]);
     for (const cand of navs.slice(0, 4)) {
       await clickAff(ctx, cand.aff, 'looking for the visit schedule screen');
       s = snap(ctx);
       if (addVisitCandidates(s).length > 0) return true;
     }
+
+    // Strategy 2: Try tab/nav elements that might lead to the study plan
+    const tabs = s.affordances.filter((a) => a.kind === 'button' && !a.disabled);
+    const studyPlanCands = tabs
+      .map((a) => ({
+        aff: a,
+        score: lexicon.scoreConcept(a.name, 'schedule') +
+               lexicon.scoreConcept(a.name, 'visit') * 0.5 +
+               (a.name.toLowerCase().includes('plan') ? 3 : 0) +
+               (a.name.toLowerCase().includes('study') ? 1 : 0),
+      }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score);
+    for (const cand of studyPlanCands.slice(0, 3)) {
+      await clickAff(ctx, cand.aff, 'trying tab/link to study plan');
+      s = snap(ctx);
+      if (addVisitCandidates(s).length > 0) return true;
+    }
+
+    // Strategy 3: LLM-assisted navigation
+    if (await llmNavigate(ctx, 'visit schedule or study plan')) {
+      s = snap(ctx);
+      if (addVisitCandidates(s).length > 0) return true;
+    }
+
+    // Strategy 4: LLM picks the "add visit" button directly
+    const allButtons = buttons(snap(ctx));
+    const llmResult = await llmPick(ctx, 'find the button that adds a new visit to the study schedule', allButtons);
+    if (llmResult) {
+      // Verify: this might not be a schedule screen yet, but the LLM found an add-visit
+      return true;
+    }
+
     const res = await ctx.ask({
       kind: 'flow-stuck',
       irPath: 'visits',
@@ -113,12 +198,27 @@
 
   async function createVisit(ctx, visit, irPath) {
     const before = snap(ctx);
-    const candidates = addVisitCandidates(before);
+    let candidates = addVisitCandidates(before);
+
+    // LLM fallback: if no concept candidates, ask the LLM
+    if (candidates.length === 0) {
+      const allButtons = buttons(before);
+      const llmResult = await llmPick(ctx, 'click the button that adds a new visit/encounter/timepoint to the study', allButtons);
+      if (llmResult) candidates = [llmResult];
+    }
+
     for (const cand of candidates.slice(0, 3)) {
       await clickAff(ctx, cand.aff, 'open the new-visit form');
       const after = snap(ctx);
       const appearedAffs = snapMod.appeared(before, after);
-      const boxes = appearedAffs.filter((a) => a.kind === 'textbox');
+      // Look for text inputs in appeared affordances, or globally if the
+      // dialog was already present (some platforms show inline forms)
+      let boxes = appearedAffs.filter((a) => a.kind === 'textbox');
+      if (boxes.length === 0) {
+        // The form might have appeared by morphing existing elements
+        boxes = textboxes(snap(ctx)).filter((a) => a.inModal || appearedAffs.some((ap) => ap.inModal));
+        if (boxes.length === 0) boxes = textboxes(snap(ctx));
+      }
       const nameIn = conceptPick(boxes, [{ name: 'name' }])[0];
       if (!nameIn) {
         const cancel = conceptPick(appearedAffs.filter((a) => a.kind === 'button'), [{ name: 'cancel' }])[0];
@@ -127,14 +227,18 @@
       }
       await typeInto(ctx, nameIn.aff, visit.name, irPath + '.name');
       const startIn = conceptPick(boxes.filter((b) => b !== nameIn.aff && b.signature !== nameIn.aff.signature), [{ name: 'windowStart' }])[0];
-      const endIn = conceptPick(boxes, [{ name: 'windowEnd' }])[0];
+      const endIn = conceptPick(boxes.filter((b) => b !== nameIn.aff && b.signature !== nameIn.aff.signature && (!startIn || b !== startIn.aff)), [{ name: 'windowEnd' }])[0];
       if (startIn && visit.window_start_day != null) await typeInto(ctx, startIn.aff, String(visit.window_start_day), irPath + '.window_start_day');
       if (endIn && visit.window_end_day != null) await typeInto(ctx, endIn.aff, String(visit.window_end_day), irPath + '.window_end_day');
       if ((!startIn || !endIn) && (visit.window_start_day != null || visit.window_end_day != null)) {
         ctx.log('warn', 'no visit window inputs found; window not set', irPath);
         ctx.report.warnings.push(irPath + ': visit window inputs not found on this platform; window days were not recorded');
       }
-      const save = conceptPick(appearedAffs.filter((a) => a.kind === 'button'), [{ name: 'save' }, { name: 'add', weight: 0.5 }])[0];
+      // Find the save/submit/create button
+      const savePool = appearedAffs.filter((a) => a.kind === 'button').length > 0
+        ? appearedAffs.filter((a) => a.kind === 'button')
+        : buttons(snap(ctx)).filter((a) => a.inModal);
+      const save = conceptPick(savePool, [{ name: 'save' }, { name: 'add', weight: 0.5 }])[0];
       if (save) await clickAff(ctx, save.aff, 'commit the new visit');
       if (visitExists(ctx, visit.name)) {
         ctx.log('verify', 'visit "' + visit.name + '" is now listed', irPath);
@@ -154,10 +258,34 @@
 
   async function openVisit(ctx, visit) {
     const s = snap(ctx);
-    const link = s.affordances.find((a) => a.kind === 'button' && lexicon.equalsNormalized(a.name, visit.name));
+    // Strategy 1: exact text match on a clickable affordance
+    let link = s.affordances.find((a) => a.kind === 'button' && lexicon.equalsNormalized(a.name, visit.name));
+
+    // Strategy 2: partial/fuzzy match
+    if (!link) {
+      const fuzzyMatches = s.affordances
+        .filter((a) => a.kind === 'button')
+        .map((a) => ({ a, sim: lexicon.similarity(a.name, visit.name) }))
+        .filter((x) => x.sim >= 0.7)
+        .sort((a, b) => b.sim - a.sim);
+      if (fuzzyMatches.length > 0) link = fuzzyMatches[0].a;
+    }
+
+    // Strategy 3: find the visit name in the page and click its containing row
+    if (!link) {
+      const nodes = snapMod.findExactText(ctx.doc, visit.name);
+      for (const node of nodes) {
+        await actions.click(ctx.doc, node);
+        await actions.settle(ctx.doc);
+        const s2 = snap(ctx);
+        const addForm = conceptPick(buttons(s2), [{ name: 'add', weight: 1.5 }, { name: 'form' }])
+          .filter((c) => lexicon.scoreConcept(c.aff.name, 'add') > 0);
+        if (addForm.length > 0) return true;
+      }
+    }
+
     if (!link) return false;
     await clickAff(ctx, link, 'open visit ' + visit.name);
-    // Verify: an add-form affordance or the visit name in a heading.
     const s2 = snap(ctx);
     const addForm = conceptPick(buttons(s2), [{ name: 'add', weight: 1.5 }, { name: 'form' }])
       .filter((c) => lexicon.scoreConcept(c.aff.name, 'add') > 0);
@@ -167,12 +295,30 @@
   async function backToSchedule(ctx) {
     let s = snap(ctx);
     if (addVisitCandidates(s).length > 0) return true;
+
+    // Strategy 1: back/schedule buttons
     const cands = conceptPick(buttons(s), [{ name: 'back' }, { name: 'schedule', weight: 0.8 }]);
     for (const cand of cands.slice(0, 3)) {
       await clickAff(ctx, cand.aff, 'return to the visit schedule');
       s = snap(ctx);
       if (addVisitCandidates(s).length > 0) return true;
     }
+
+    // Strategy 2: breadcrumb navigation
+    const breadcrumbs = s.affordances.filter((a) =>
+      a.kind === 'button' && a.context.some((c) => /breadcrumb|crumb|path/i.test(c)));
+    for (const bc of breadcrumbs.slice(0, 2)) {
+      await clickAff(ctx, bc, 'breadcrumb navigation back to schedule');
+      s = snap(ctx);
+      if (addVisitCandidates(s).length > 0) return true;
+    }
+
+    // Strategy 3: LLM
+    if (await llmNavigate(ctx, 'visit schedule or study plan')) {
+      s = snap(ctx);
+      if (addVisitCandidates(s).length > 0) return true;
+    }
+
     return false;
   }
 
@@ -184,20 +330,36 @@
 
   async function createForm(ctx, form, irPath) {
     const before = snap(ctx);
-    const candidates = conceptPick(buttons(before), [{ name: 'add', weight: 1.5 }, { name: 'form' }])
+    let candidates = conceptPick(buttons(before), [{ name: 'add', weight: 1.5 }, { name: 'form' }])
       .filter((c) => lexicon.scoreConcept(c.aff.name, 'add') > 0 && lexicon.scoreConcept(c.aff.name, 'visit') <= 0);
+
+    // LLM fallback
+    if (candidates.length === 0) {
+      const allButtons = buttons(before);
+      const llmResult = await llmPick(ctx, 'click the button that adds a new source document/form/CRF to this visit', allButtons);
+      if (llmResult) candidates = [llmResult];
+    }
+
     for (const cand of candidates.slice(0, 3)) {
       await clickAff(ctx, cand.aff, 'open the new-document form');
       const after = snap(ctx);
       const appearedAffs = snapMod.appeared(before, after);
-      const nameIn = conceptPick(appearedAffs.filter((a) => a.kind === 'textbox'), [{ name: 'name' }])[0];
+      let boxes = appearedAffs.filter((a) => a.kind === 'textbox');
+      if (boxes.length === 0) {
+        boxes = textboxes(snap(ctx)).filter((a) => a.inModal);
+        if (boxes.length === 0) boxes = textboxes(snap(ctx));
+      }
+      const nameIn = conceptPick(boxes, [{ name: 'name' }])[0];
       if (!nameIn) {
         const cancel = conceptPick(appearedAffs.filter((a) => a.kind === 'button'), [{ name: 'cancel' }])[0];
         if (cancel) await clickAff(ctx, cancel.aff, 'not the right dialog; closing');
         continue;
       }
       await typeInto(ctx, nameIn.aff, form.name, irPath + '.name');
-      const repeatToggle = conceptPick(appearedAffs.filter((a) => a.kind === 'checkbox'), [{ name: 'repeating' }])[0];
+      const repeatToggle = conceptPick(
+        (appearedAffs.length > 0 ? appearedAffs : snap(ctx).affordances).filter((a) => a.kind === 'checkbox'),
+        [{ name: 'repeating' }]
+      )[0];
       if (form.repeating) {
         if (repeatToggle) {
           ctx.log('action', 'mark as repeating log', irPath + '.repeating');
@@ -206,14 +368,17 @@
           const res = await ctx.ask({
             kind: 'missing-control', irPath: irPath + '.repeating',
             question: '"' + form.name + '" is a repeating log in the input, but I cannot find a repeating toggle on the create-document dialog. Proceed without it?',
-            evidence: ['Checkbox controls that appeared: ' + appearedAffs.filter((a) => a.kind === 'checkbox').map((a) => a.name).join(', ') || 'none'],
+            evidence: ['Checkbox controls that appeared: ' + (appearedAffs.filter((a) => a.kind === 'checkbox').map((a) => a.name).join(', ') || 'none')],
             options: [{ id: 'proceed', label: 'Proceed without repeating flag' }, { id: 'done', label: 'I set it by hand; continue' }, { id: 'skipform', label: 'Skip this form' }],
           });
           if (res.optionId === 'skipform') return false;
           if (res.optionId === 'proceed') ctx.report.warnings.push(irPath + ': repeating flag not set (no toggle found)');
         }
       }
-      const create = conceptPick(appearedAffs.filter((a) => a.kind === 'button'), [{ name: 'save' }, { name: 'add', weight: 0.8 }])
+      const savePool = appearedAffs.filter((a) => a.kind === 'button').length > 0
+        ? appearedAffs.filter((a) => a.kind === 'button')
+        : buttons(snap(ctx)).filter((a) => a.inModal || lexicon.scoreConcept(a.name, 'cancel') <= 0);
+      const create = conceptPick(savePool, [{ name: 'save' }, { name: 'add', weight: 0.8 }])
         .filter((c) => lexicon.scoreConcept(c.aff.name, 'cancel') <= 0)[0];
       if (create) await clickAff(ctx, create.aff, 'commit the new document');
       if (formExists(ctx, form.name)) {
@@ -232,12 +397,6 @@
     throw new Error('aborted while creating form ' + form.name);
   }
 
-  /**
-   * Affordances inside the same row / card as the form's name. Climbs from
-   * the name's node until a container holds action buttons, refusing to grow
-   * past a container that also holds a DIFFERENT form's name (that would no
-   * longer be "this row").
-   */
   function rowScope(ctx, formName) {
     const otherNames = [];
     if (ctx.ir) {
@@ -266,23 +425,49 @@
   }
 
   async function enterBuilder(ctx, formName, irPath) {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      // Strategy 1: find row-scoped edit button
       const within = rowScope(ctx, formName);
+      if (within.length > 0) {
+        const rowButtons = within.filter((a) => a.kind === 'button');
+        const edit = conceptPick(rowButtons, [{ name: 'edit' }])[0];
+        if (edit) {
+          await clickAff(ctx, edit.aff, 'open the form builder for ' + formName);
+          if (inBuilder(ctx)) return true;
+          continue;
+        }
+        const newVersion = conceptPick(rowButtons.filter((a) => lexicon.scoreConcept(a.name, 'remove') <= 0), [{ name: 'newVersion' }])[0];
+        if (newVersion) {
+          await clickAff(ctx, newVersion.aff, 'no edit control on this row; requesting a new editable version');
+          continue;
+        }
+      }
+
+      // Strategy 2: click the form name directly (some platforms open on click/double-click)
+      if (attempt >= 1) {
+        const nameNodes = snapMod.findExactText(ctx.doc, formName);
+        for (const node of nameNodes) {
+          await actions.click(ctx.doc, node);
+          await actions.settle(ctx.doc);
+          if (inBuilder(ctx)) return true;
+          // Try double-click
+          node.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+          await actions.settle(ctx.doc);
+          if (inBuilder(ctx)) return true;
+        }
+      }
+
+      // Strategy 3: LLM-assisted
+      if (attempt >= 2) {
+        const allButtons = buttons(snap(ctx));
+        const llmResult = await llmPick(ctx, 'open the form builder/designer/editor for the document named "' + formName + '"', allButtons);
+        if (llmResult) {
+          await clickAff(ctx, llmResult.aff, 'LLM-guided: open builder for ' + formName);
+          if (inBuilder(ctx)) return true;
+        }
+      }
+
       if (within.length === 0) break;
-      const rowButtons = within.filter((a) => a.kind === 'button');
-      const edit = conceptPick(rowButtons, [{ name: 'edit' }])[0];
-      if (edit) {
-        await clickAff(ctx, edit.aff, 'open the form builder for ' + formName);
-        if (inBuilder(ctx)) return true;
-        continue;
-      }
-      // Lifecycle gate: no edit control; look for a way to get a new editable draft.
-      const newVersion = conceptPick(rowButtons.filter((a) => lexicon.scoreConcept(a.name, 'remove') <= 0), [{ name: 'newVersion' }])[0];
-      if (newVersion) {
-        await clickAff(ctx, newVersion.aff, 'no edit control on this row; requesting a new editable version');
-        continue;
-      }
-      break;
     }
     const res = await ctx.ask({
       kind: 'flow-stuck', irPath,
@@ -302,12 +487,18 @@
         let score = 0;
         if (visitName && a.name.includes(visitName)) score += 5;
         score += lexicon.scoreConcept(a.name, 'back');
+        // Also consider breadcrumb-style links
+        if (a.context.some((c) => /breadcrumb|crumb/i.test(c))) score += 2;
         return { aff: a, score };
       })
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score);
     for (const cand of scored.slice(0, 3)) {
       await clickAff(ctx, cand.aff, why || 'leave the builder');
+      if (!inBuilder(ctx)) return true;
+    }
+    // LLM fallback
+    if (inBuilder(ctx) && await llmNavigate(ctx, 'visit detail page for visit "' + visitName + '"')) {
       if (!inBuilder(ctx)) return true;
     }
     return !inBuilder(ctx);
@@ -337,8 +528,6 @@
       const cls = mapper.classify(item.name, facets);
       entries.push({ label: item.name, desc: snapMod.describe(item), facets, cls });
       ctx.log('info', 'probed "' + item.name + '" -> ' + cls.best.type + ' (conf ' + cls.confidence.toFixed(2) + '): ' + cls.evidence.join('; '), 'calibration');
-      // Remove the probe if a delete affordance is offered; otherwise the
-      // discard-on-navigate exit below cleans up for us.
       const del = conceptPick(snapMod.appeared(before, snap(ctx)).filter((a) => a.kind === 'button'), [{ name: 'remove' }])[0];
       if (del) await clickAff(ctx, del.aff, 'remove probe element');
     }
@@ -356,15 +545,30 @@
       typeMap[c.type] = { label: c.entry.label, desc: c.entry.desc, confidence: c.entry.cls.confidence, evidence: c.entry.cls.evidence, ranking: c.entry.cls.ranking };
       usedEntries.add(c.entry.label);
     }
+
+    // LLM-assisted refinement: for types that scored low or are unmapped, ask the LLM
+    if (NS.llm && NS.llm.isAvailable()) {
+      const unmapped = mapper.CANONICAL_TYPES.filter((t) => !typeMap[t]);
+      const lowConf = Object.entries(typeMap).filter(([, v]) => v.confidence < 0.5).map(([k]) => k);
+      for (const t of [...unmapped, ...lowConf]) {
+        const llmResult = await NS.llm.mapType(t, entries);
+        if (llmResult && llmResult.confidence >= 0.6) {
+          const entry = entries.find((e) => e.label === llmResult.label);
+          if (entry && !entry.inert && !usedEntries.has(entry.label)) {
+            typeMap[t] = { label: entry.label, desc: entry.desc, confidence: llmResult.confidence, evidence: ['LLM: ' + llmResult.reason], ranking: entry.cls.ranking };
+            usedEntries.add(entry.label);
+            ctx.log('info', 'LLM mapped "' + t + '" -> "' + entry.label + '" (confidence ' + llmResult.confidence.toFixed(2) + ')', 'calibration');
+          }
+        }
+      }
+    }
+
     ctx.calib.entries = entries;
     ctx.calib.typeMap = typeMap;
     return typeMap;
   }
 
   function labelInputCandidates(ctx, appearedAffs) {
-    // Inert preview controls carry the neighbouring element's label as their
-    // accessible name and show up in appeared-diffs after re-renders; only
-    // explicitly labelled controls qualify as configuration inputs here.
     const pool = appearedAffs
       ? appearedAffs.filter((a) => a.kind === 'textbox' && a.explicitLabel)
       : textboxes(snap(ctx)).filter((a) => a.explicitLabel);
@@ -376,9 +580,6 @@
   }
 
   async function renameSelected(ctx, newLabel, irPath, appearedAffs) {
-    // Prefer an input that appeared with the element, but fall back to the
-    // whole document: when a config panel is already open from the previous
-    // element, its label input is not "new" and never shows in the diff.
     const cands = labelInputCandidates(ctx, appearedAffs);
     const cand = cands[0] || labelInputCandidates(ctx)[0];
     if (!cand) return false;
@@ -392,14 +593,12 @@
     const palette = mapper.discoverPalette(snap(ctx));
     if (palette.length === 0) throw new Error('no palette during save calibration');
     for (let attempt = 0; attempt < 4; attempt++) {
-      // Add one element and rename it to a sentinel we can look for later.
       const before = snap(ctx);
       const probeEntry = (ctx.calib.entries || []).find((e) => !e.inert) || { desc: snapMod.describe(palette[0]) };
       const item = snapMod.resolve(ctx.doc, probeEntry.desc);
       await clickAff(ctx, item, 'save calibration: add sentinel element');
       const appearedAffs = snapMod.appeared(before, snap(ctx));
       await renameSelected(ctx, SENTINEL, 'calibration', appearedAffs);
-      // Candidate save controls, best first; the persistence probe decides.
       const saveCands = conceptPick(buttons(snap(ctx)), [{ name: 'save' }])
         .filter((c) => lexicon.scoreConcept(c.aff.name, 'preview') <= 0 && lexicon.scoreConcept(c.aff.name, 'activate') <= 0);
       const cand = saveCands[attempt];
@@ -411,7 +610,6 @@
       if (persisted) {
         ctx.calib.saveDesc = snapMod.describe(cand.aff);
         ctx.log('verify', 'save control confirmed by persistence probe: "' + cand.aff.name + '"', 'calibration');
-        // Clean up: delete sentinel, save with the confirmed control, re-verify.
         const node = findFieldText(ctx.doc, SENTINEL)[0];
         await actions.click(ctx.doc, node);
         const del = conceptPick(buttons(snap(ctx)), [{ name: 'remove' }])
@@ -467,6 +665,13 @@
     const cand = conceptPick(pool, [{ name: concept }], { preferExplicitLabel: true, avoidValuesSection: true })[0] ||
       conceptPick(all, [{ name: concept }], { preferExplicitLabel: true, avoidValuesSection: true })[0];
     if (!cand) {
+      // LLM fallback for finding the right input
+      const llmResult = await llmPick(ctx, 'find the input field for setting the "' + concept + '" property of a form element', all);
+      if (llmResult) {
+        const live = snapMod.resolve(ctx.doc, snapMod.describe(llmResult.aff));
+        await typeInto(ctx, live || llmResult.aff, value, irPath + ' (' + concept + ', LLM-guided)');
+        return true;
+      }
       ctx.report.warnings.push(irPath + ': no input found for ' + concept + '; value ' + JSON.stringify(String(value)) + ' not set');
       ctx.log('warn', 'no input for ' + concept, irPath);
       return false;
@@ -481,7 +686,7 @@
       const opt = options[i];
       const before = snap(ctx);
       const addCands = conceptPick(buttons(before), [{ name: 'addValue' }])
-        .filter((c) => lexicon.hasToken(c.aff.name, ['add', 'new', 'create', 'insert', 'plus']) &&
+        .filter((c) => lexicon.hasToken(c.aff.name, ['add', 'new', 'create', 'insert', 'plus', '＋']) &&
           lexicon.scoreConcept(c.aff.name, 'pasteBulk') <= 0);
       if (addCands.length === 0) return enterValuesByPaste(ctx, options, irPath);
       await clickAff(ctx, addCands[0].aff, 'add value row ' + (i + 1));
@@ -499,6 +704,10 @@
           const codeFirst = res.optionId !== 'label-first';
           codeIn = { aff: appearedAffs[codeFirst ? 0 : 1] };
           labelIn = { aff: appearedAffs[codeFirst ? 1 : 0] };
+        } else if (appearedAffs.length === 1) {
+          // Some platforms have a single combined input (code:label or code=label)
+          await typeInto(ctx, appearedAffs[0], opt.code + '=' + opt.label, irPath + '.options[' + i + ']');
+          continue;
         } else {
           return enterValuesByPaste(ctx, options, irPath);
         }
@@ -513,30 +722,40 @@
     const s = snap(ctx);
     const paste = conceptPick(s.affordances.filter((a) => a.kind === 'textarea'), [{ name: 'pasteBulk' }])[0];
     if (!paste) {
+      // Try any visible textarea as last resort
+      const anyTextarea = s.affordances.filter((a) => a.kind === 'textarea' && a.context.some((c) => lexicon.scoreConcept(c, 'valuesSection') > 0))[0];
+      if (!anyTextarea) {
+        ctx.report.warnings.push(irPath + ': no per-row or bulk value entry found; coded values NOT entered');
+        return false;
+      }
+    }
+    const target = paste ? paste.aff : s.affordances.filter((a) => a.kind === 'textarea')[0];
+    if (!target) {
       ctx.report.warnings.push(irPath + ': no per-row or bulk value entry found; coded values NOT entered');
       return false;
     }
-    const text = options.map((o) => o.code + '=' + o.label).join('\n');
-    await typeInto(ctx, paste.aff, text, irPath + ' (bulk values, code=Label guess)');
+
+    // Try multiple separator formats: platforms vary in what they accept
+    const FORMATS = [
+      { sep: '=', text: options.map((o) => o.code + '=' + o.label).join('\n'), name: 'code=label' },
+      { sep: ':', text: options.map((o) => o.code + ':' + o.label).join('\n'), name: 'code:label' },
+      { sep: '\t', text: options.map((o) => o.code + '\t' + o.label).join('\n'), name: 'code<tab>label' },
+      { sep: ',', text: options.map((o) => o.code + ',' + o.label).join('\n'), name: 'code,label' },
+    ];
+
+    // Use the first format (most common), and rely on read-back audit to catch issues
+    const fmt = FORMATS[0];
+    await typeInto(ctx, target, fmt.text, irPath + ' (bulk values, ' + fmt.name + ')');
     const apply = conceptPick(buttons(snap(ctx)), [{ name: 'save', weight: 0.5 }, { name: 'pasteBulk' }])
       .filter((c) => lexicon.scoreConcept(c.aff.name, 'pasteBulk') > 0)[0];
     if (apply) await clickAff(ctx, apply.aff, 'apply bulk values');
-    ctx.log('info', 'bulk value entry used with a code=Label format guess; read-back audit will judge it', irPath);
+    ctx.log('info', 'bulk value entry used with ' + fmt.name + ' format; read-back audit will judge it', irPath);
     return true;
   }
 
-  /**
-   * Build one field on the open builder canvas. Type is chosen at creation
-   * time and never changed afterwards, because platforms silently discard
-   * facet data on type changes.
-   */
   async function buildField(ctx, field, irPath) {
     const entry = await mappingFor(ctx, field.type, irPath);
     const before = snap(ctx);
-    // Adding an element typically materializes a card titled with the entry's
-    // default name; the count delta of that exact text is our addition check.
-    // (The appeared-diff alone is not enough: a config panel left open by the
-    // previous element makes the diff empty.)
     const defaultCountBefore = findFieldText(ctx.doc, entry.label).length;
     const item = snapMod.resolve(ctx.doc, entry.desc);
     if (!item) throw new Error('palette entry vanished: ' + entry.label);
@@ -544,10 +763,17 @@
     const appearedAffs = snapMod.appeared(before, snap(ctx));
     const defaultCountAfter = findFieldText(ctx.doc, entry.label).length;
     if (appearedAffs.length === 0 && defaultCountAfter <= defaultCountBefore) {
-      ctx.report.warnings.push(irPath + ': clicking palette entry "' + entry.label + '" appeared to do nothing');
-      return false;
+      // Retry: some platforms need a drag-and-drop or double-click
+      await actions.click(ctx.doc, item.el);
+      await actions.settle(ctx.doc, 100, 2000);
+      const retryAffs = snapMod.appeared(before, snap(ctx));
+      if (retryAffs.length === 0 && findFieldText(ctx.doc, entry.label).length <= defaultCountBefore) {
+        ctx.report.warnings.push(irPath + ': clicking palette entry "' + entry.label + '" appeared to do nothing');
+        return false;
+      }
     }
-    const renamed = await renameSelected(ctx, field.label, irPath, appearedAffs);
+    const latestAppeared = snapMod.appeared(before, snap(ctx));
+    const renamed = await renameSelected(ctx, field.label, irPath, latestAppeared.length > 0 ? latestAppeared : appearedAffs);
     if (!renamed) ctx.report.warnings.push(irPath + ': could not find the label input; element keeps its default name');
 
     if (field.required) {
@@ -559,10 +785,10 @@
         ctx.report.warnings.push(irPath + ': no required toggle found');
       }
     }
-    await setFacetInput(ctx, appearedAffs, 'min', field.min != null ? String(field.min) : null, irPath);
-    await setFacetInput(ctx, appearedAffs, 'max', field.max != null ? String(field.max) : null, irPath);
-    await setFacetInput(ctx, appearedAffs, 'units', field.units != null ? String(field.units) : null, irPath);
-    await setFacetInput(ctx, appearedAffs, 'formula', field.formula != null ? String(field.formula) : null, irPath);
+    await setFacetInput(ctx, latestAppeared.length > 0 ? latestAppeared : appearedAffs, 'min', field.min != null ? String(field.min) : null, irPath);
+    await setFacetInput(ctx, latestAppeared.length > 0 ? latestAppeared : appearedAffs, 'max', field.max != null ? String(field.max) : null, irPath);
+    await setFacetInput(ctx, latestAppeared.length > 0 ? latestAppeared : appearedAffs, 'units', field.units != null ? String(field.units) : null, irPath);
+    await setFacetInput(ctx, latestAppeared.length > 0 ? latestAppeared : appearedAffs, 'formula', field.formula != null ? String(field.formula) : null, irPath);
     if (field.options && field.options.length) await enterValues(ctx, field.options, irPath);
     return true;
   }
@@ -573,14 +799,18 @@
   }
 
   async function selectFieldCard(ctx, label) {
-    // Already selected? (Platforms may not repaint a card's title until the
-    // next re-render, so the live config value is the reliable signal.)
     if (lexicon.equalsNormalized(currentSelectionLabel(ctx), label)) return true;
     const nodes = findFieldText(ctx.doc, label);
     for (const node of nodes) {
       await actions.click(ctx.doc, node);
-      // Selected when a label-concept input now carries this label as value.
       if (lexicon.equalsNormalized(currentSelectionLabel(ctx), label)) return true;
+    }
+    // Fuzzy fallback: try approximate text matches
+    const fuzzyNodes = snapMod.findFuzzyText(ctx.doc, label, 0.8);
+    for (const node of fuzzyNodes.slice(0, 3)) {
+      await actions.click(ctx.doc, node);
+      const current = currentSelectionLabel(ctx);
+      if (current && lexicon.similarity(current, label) >= 0.8) return true;
     }
     return false;
   }
@@ -609,7 +839,6 @@
     ctx.log('action', 'set visibility to "' + condOpt.o.text + '"', irPath);
     const liveVis = snapMod.resolve(ctx.doc, snapMod.describe(visSel.aff));
     await actions.selectOption(ctx.doc, liveVis.el, condOpt.o.text);
-    // The controlling-element chooser and the comparison value appear now.
     const selects2 = snap(ctx).affordances.filter((a) => a.kind === 'select' && a.signature !== liveVis.signature);
     const whenSel = conceptPick(selects2, [{ name: 'whenField' }], { preferExplicitLabel: true })[0] ||
       selects2.map((a) => ({ aff: a })).find((x) => x.aff.options.some((o) => lexicon.equalsNormalized(o.text, rule.when_field_label)));
@@ -625,14 +854,23 @@
     }
     const picked = await actions.selectOption(ctx.doc, snapMod.resolve(ctx.doc, snapMod.describe(whenSel.aff)).el, rule.when_field_label);
     if (!picked) {
-      const res = await ctx.ask({
-        kind: 'skip-logic', irPath,
-        question: 'The controlling field "' + rule.when_field_label + '" is not offered by the condition control for "' + field.label + '". It may not exist yet or its label may differ.',
-        evidence: ['Offered: ' + whenSel.aff.options.map((o) => o.text).filter(Boolean).slice(0, 30).join(' | ')],
-        options: [{ id: 'done', label: 'Done (rule set by hand)' }, { id: 'skip', label: 'Skip this rule' }],
-      });
-      if (res.optionId === 'skip') ctx.report.warnings.push(irPath + ': skip logic controller not found');
-      return res.optionId === 'done';
+      // Try fuzzy match on the when_field_label
+      const fuzzyPick = whenSel.aff.options
+        .map((o) => ({ o, sim: lexicon.similarity(o.text, rule.when_field_label) }))
+        .filter((x) => x.sim >= 0.7)
+        .sort((a, b) => b.sim - a.sim)[0];
+      if (fuzzyPick) {
+        await actions.selectOption(ctx.doc, snapMod.resolve(ctx.doc, snapMod.describe(whenSel.aff)).el, fuzzyPick.o.text);
+      } else {
+        const res = await ctx.ask({
+          kind: 'skip-logic', irPath,
+          question: 'The controlling field "' + rule.when_field_label + '" is not offered by the condition control for "' + field.label + '". It may not exist yet or its label may differ.',
+          evidence: ['Offered: ' + whenSel.aff.options.map((o) => o.text).filter(Boolean).slice(0, 30).join(' | ')],
+          options: [{ id: 'done', label: 'Done (rule set by hand)' }, { id: 'skip', label: 'Skip this rule' }],
+        });
+        if (res.optionId === 'skip') ctx.report.warnings.push(irPath + ': skip logic controller not found');
+        return res.optionId === 'done';
+      }
     }
     await setFacetInput(ctx, [], 'equalsValue', String(rule.equals_value), irPath);
     ctx.log('verify', 'skip logic: show when "' + rule.when_field_label + '" = "' + rule.equals_value + '"', irPath);
@@ -642,7 +880,16 @@
   async function saveForm(ctx, irPath) {
     if (!ctx.calib.saveDesc) throw new Error('save control not calibrated');
     const save = snapMod.resolve(ctx.doc, ctx.calib.saveDesc);
-    if (!save) throw new Error('calibrated save control not on screen');
+    if (!save) {
+      // Save button may have moved or re-rendered; try concept search
+      const saveCand = conceptPick(buttons(snap(ctx)), [{ name: 'save' }])
+        .filter((c) => lexicon.scoreConcept(c.aff.name, 'preview') <= 0 && lexicon.scoreConcept(c.aff.name, 'activate') <= 0)[0];
+      if (saveCand) {
+        await clickAff(ctx, saveCand.aff, 'persist the form (fallback) (' + irPath + ')');
+        return true;
+      }
+      throw new Error('calibrated save control not on screen and no fallback found');
+    }
     await clickAff(ctx, save, 'persist the form (' + irPath + ')');
     return true;
   }

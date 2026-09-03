@@ -16,6 +16,7 @@
         "core/snapshot.js",
         "core/actions.js",
         "core/mapper.js",
+        "core/llm.js",
         "core/flows.js",
         "core/verify.js",
         "core/orchestrator.js",

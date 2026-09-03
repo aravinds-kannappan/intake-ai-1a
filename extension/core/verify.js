@@ -211,7 +211,9 @@
   /** Visit-level presence checks against the schedule and visit screens. */
   function auditVisitRow(ctx, visit) {
     const problems = [];
-    const anchors = snapMod.findExactText(ctx.doc, visit.name);
+    let anchors = snapMod.findExactText(ctx.doc, visit.name);
+    // Fuzzy fallback
+    if (anchors.length === 0) anchors = snapMod.findFuzzyText(ctx.doc, visit.name, 0.8);
     if (anchors.length === 0) { problems.push('visit missing from schedule'); return problems; }
     const row = anchors[0].closest('tr, li, [role="row"]');
     if (row && (visit.window_start_day != null)) {
@@ -225,7 +227,8 @@
 
   function auditFormRow(ctx, form) {
     const problems = [];
-    const anchors = snapMod.findExactText(ctx.doc, form.name);
+    let anchors = snapMod.findExactText(ctx.doc, form.name);
+    if (anchors.length === 0) anchors = snapMod.findFuzzyText(ctx.doc, form.name, 0.8);
     if (anchors.length === 0) { problems.push('document missing from visit'); return problems; }
     const row = anchors[0].closest('tr, li, [role="row"]');
     if (row) {

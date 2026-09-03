@@ -16,47 +16,202 @@
     return String(text)
       .toLowerCase()
       .replace(/[_/&+-]/g, ' ')
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
       .split(/[^a-z0-9]+/)
       .filter(Boolean);
+  }
+
+  /**
+   * Fuzzy token match: checks whether a token is a prefix of any word in a
+   * list or vice versa, to catch truncations and abbreviations.
+   */
+  function fuzzyTokenMatch(token, listTokens) {
+    for (const lt of listTokens) {
+      if (token === lt) return 1.0;
+      if (token.length >= 3 && lt.startsWith(token)) return 0.7;
+      if (lt.length >= 3 && token.startsWith(lt)) return 0.7;
+    }
+    return 0;
   }
 
   // Concept vocabularies. strong = defining tokens, weak = supporting tokens,
   // neg = tokens that argue this is NOT the control we want.
   const CONCEPTS = {
-    visit: { strong: ['visit', 'encounter', 'timepoint', 'appointment'], weak: ['event', 'milestone', 'cycle'], neg: [] },
-    schedule: { strong: ['schedule', 'plan', 'timeline', 'flowchart'], weak: ['study', 'design', 'build'], neg: ['patient', 'report', 'subject'] },
-    form: { strong: ['form', 'document', 'instrument', 'crf', 'questionnaire'], weak: ['source', 'page', 'assessment'], neg: [] },
-    add: { strong: ['add', 'new', 'create'], weak: ['plus', 'insert', 'attach'], neg: ['value', 'page'] },
-    save: { strong: ['save', 'commit'], weak: ['apply', 'done', 'update', 'confirm', 'ok', 'keep'], neg: ['template', 'as', 'preview', 'activate', 'publish', 'cancel', 'draft', 'local', 'locally', 'copy', 'sync', 'export'] },
-    cancel: { strong: ['cancel', 'discard', 'close'], weak: ['back', 'dismiss'], neg: ['save'] },
-    edit: { strong: ['edit', 'design', 'designer', 'builder', 'modify'], weak: ['open', 'configure', 'compose'], neg: ['delete', 'preview'] },
-    newVersion: { strong: ['version', 'revise', 'revision', 'amend'], weak: ['new', 'draft', 'create'], neg: ['delete'] },
-    remove: { strong: ['delete', 'remove', 'trash', 'detach'], weak: ['clear'], neg: [] },
-    name: { strong: ['name', 'title'], weak: ['label'], neg: [] },
-    windowStart: { strong: ['start', 'from', 'begin', 'opens'], weak: ['window', 'day', 'first'], neg: ['end'] },
-    windowEnd: { strong: ['end', 'until', 'closes'], weak: ['window', 'day', 'last', 'to'], neg: ['start'] },
-    repeating: { strong: ['repeating', 'repeat', 'log', 'recurring'], weak: ['multiple', 'many', 'records'], neg: [] },
-    required: { strong: ['required', 'mandatory'], weak: ['must'], neg: [] },
-    labelInput: { strong: ['label', 'caption'], weak: ['name', 'title', 'text', 'question'], neg: ['placeholder', 'value', 'display'] },
-    typeSelect: { strong: ['type', 'kind'], weak: ['element', 'control', 'widget', 'question'], neg: [] },
-    min: { strong: ['minimum', 'min', 'lower', 'lowest'], weak: ['floor', 'low'], neg: ['max'] },
-    max: { strong: ['maximum', 'max', 'upper', 'highest'], weak: ['ceiling', 'high'], neg: ['min'] },
-    units: { strong: ['units', 'unit', 'uom'], weak: ['measure'], neg: [] },
-    decimalPlaces: { strong: ['places', 'precision'], weak: ['decimal', 'digits'], neg: [] },
-    formula: { strong: ['formula', 'expression', 'calculation', 'computation'], weak: ['derive', 'derived', 'computed', 'compute', 'rule'], neg: [] },
-    valueCode: { strong: ['code', 'stored', 'key'], weak: ['value', 'id'], neg: ['label', 'display'] },
-    valueLabel: { strong: ['label', 'display', 'shown'], weak: ['text', 'name'], neg: ['code', 'stored'] },
-    addValue: { strong: ['value', 'values', 'option', 'options', 'choice', 'choices', 'row', 'item'], weak: ['add', 'new'], neg: ['paste', 'bulk'] },
-    valuesSection: { strong: ['values', 'choices', 'codes', 'options'], weak: ['value', 'option', 'choice', 'code', 'list', 'item', 'items'], neg: [] },
-    pasteBulk: { strong: ['paste', 'bulk', 'batch'], weak: ['import', 'values'], neg: [] },
-    visibility: { strong: ['visibility', 'visible', 'show', 'shown', 'display', 'skip'], weak: ['condition', 'conditional', 'logic', 'rule', 'when', 'hide'], neg: ['hidden'] },
-    conditionalMode: { strong: ['when', 'if', 'condition', 'conditional'], weak: ['shown', 'depends', 'rule'], neg: ['always', 'never'] },
-    whenField: { strong: ['element', 'field', 'question', 'depends'], weak: ['when', 'control', 'source'], neg: ['value', 'equals'] },
-    equalsValue: { strong: ['equals', 'value', 'answer', 'is'], weak: ['when'], neg: ['element', 'field', 'question'] },
-    palette: { strong: ['element', 'elements', 'widget', 'widgets', 'control', 'controls', 'toolbox', 'palette', 'component', 'components'], weak: ['field', 'fields', 'question', 'questions', 'library', 'types'], neg: ['import'] },
-    back: { strong: ['back', 'return'], weak: ['schedule', 'plan', 'previous'], neg: [] },
-    preview: { strong: ['preview'], weak: [], neg: [] },
-    activate: { strong: ['activate', 'publish', 'release'], weak: ['live', 'deploy'], neg: ['deactivate'] },
+    visit: {
+      strong: ['visit', 'encounter', 'timepoint', 'appointment', 'epoch', 'period', 'assessment'],
+      weak: ['event', 'milestone', 'cycle', 'phase', 'session', 'interval', 'occasion', 'step'],
+      neg: [],
+    },
+    schedule: {
+      strong: ['schedule', 'plan', 'timeline', 'flowchart', 'matrix', 'calendar', 'overview', 'study'],
+      weak: ['design', 'build', 'structure', 'layout', 'setup', 'configure', 'manage', 'protocol'],
+      neg: ['patient', 'report', 'subject', 'data'],
+    },
+    form: {
+      strong: ['form', 'document', 'instrument', 'crf', 'questionnaire', 'worksheet', 'module', 'assessment', 'log', 'sheet'],
+      weak: ['source', 'page', 'record', 'template', 'definition', 'section', 'panel', 'block'],
+      neg: [],
+    },
+    add: {
+      strong: ['add', 'new', 'create', 'insert'],
+      weak: ['plus', 'attach', 'append', 'register', '＋'],
+      neg: ['value', 'page', 'option'],
+    },
+    save: {
+      strong: ['save', 'commit', 'persist', 'store', 'submit'],
+      weak: ['apply', 'done', 'update', 'confirm', 'ok', 'keep', 'accept', 'finish', 'complete', 'write'],
+      neg: ['template', 'as', 'preview', 'activate', 'publish', 'cancel', 'draft', 'local', 'locally', 'copy', 'sync', 'export', 'print', 'close', 'discard'],
+    },
+    cancel: {
+      strong: ['cancel', 'discard', 'close', 'dismiss', 'abort', 'nevermind'],
+      weak: ['back', 'revert', 'undo', 'exit', 'quit', 'leave', 'return'],
+      neg: ['save'],
+    },
+    edit: {
+      strong: ['edit', 'design', 'designer', 'builder', 'modify', 'author', 'compose', 'construct'],
+      weak: ['open', 'configure', 'manage', 'setup', 'customize', 'change', 'update', 'revise'],
+      neg: ['delete', 'preview', 'view', 'read'],
+    },
+    newVersion: {
+      strong: ['version', 'revise', 'revision', 'amend', 'amendment', 'v2', 'v3', 'iteration'],
+      weak: ['new', 'draft', 'create', 'update', 'clone', 'copy', 'duplicate'],
+      neg: ['delete', 'remove'],
+    },
+    remove: {
+      strong: ['delete', 'remove', 'trash', 'detach', 'discard', 'erase', 'destroy', 'drop'],
+      weak: ['clear', 'purge', 'eliminate', '×', '✕', 'x'],
+      neg: [],
+    },
+    name: {
+      strong: ['name', 'title', 'identifier', 'heading'],
+      weak: ['label', 'caption', 'description', 'id', 'alias'],
+      neg: [],
+    },
+    windowStart: {
+      strong: ['start', 'from', 'begin', 'opens', 'earliest', 'first', 'lower'],
+      weak: ['window', 'day', 'offset', 'range', 'minimum'],
+      neg: ['end', 'close', 'last', 'to'],
+    },
+    windowEnd: {
+      strong: ['end', 'until', 'closes', 'latest', 'last', 'upper', 'through'],
+      weak: ['window', 'day', 'offset', 'range', 'maximum', 'to'],
+      neg: ['start', 'begin', 'first', 'from'],
+    },
+    repeating: {
+      strong: ['repeating', 'repeat', 'log', 'recurring', 'reusable', 'iterable', 'multi'],
+      weak: ['multiple', 'many', 'records', 'entries', 'instances', 'allow'],
+      neg: [],
+    },
+    required: {
+      strong: ['required', 'mandatory', 'compulsory', 'obligatory'],
+      weak: ['must', 'needed', 'necessary', 'essential'],
+      neg: ['optional'],
+    },
+    labelInput: {
+      strong: ['label', 'caption', 'question', 'prompt', 'heading', 'title'],
+      weak: ['name', 'text', 'display', 'description'],
+      neg: ['placeholder', 'value', 'hint', 'help', 'tooltip', 'code'],
+    },
+    typeSelect: {
+      strong: ['type', 'kind', 'format', 'control', 'widget', 'element'],
+      weak: ['class', 'category', 'style', 'input', 'question', 'field'],
+      neg: [],
+    },
+    min: {
+      strong: ['minimum', 'min', 'lower', 'lowest', 'floor', 'range'],
+      weak: ['low', 'from', 'start', 'bottom', 'least'],
+      neg: ['max', 'upper', 'highest'],
+    },
+    max: {
+      strong: ['maximum', 'max', 'upper', 'highest', 'ceiling', 'limit'],
+      weak: ['high', 'to', 'end', 'top', 'most', 'cap'],
+      neg: ['min', 'lower', 'lowest'],
+    },
+    units: {
+      strong: ['units', 'unit', 'uom', 'measurement'],
+      weak: ['measure', 'dimension', 'metric', 'quantity'],
+      neg: [],
+    },
+    decimalPlaces: {
+      strong: ['places', 'precision', 'decimals', 'scale', 'fraction'],
+      weak: ['decimal', 'digits', 'accuracy', 'dp', 'significant'],
+      neg: [],
+    },
+    formula: {
+      strong: ['formula', 'expression', 'calculation', 'computation', 'equation'],
+      weak: ['derive', 'derived', 'computed', 'compute', 'rule', 'function', 'script', 'evaluate', 'auto'],
+      neg: [],
+    },
+    valueCode: {
+      strong: ['code', 'stored', 'key', 'coded', 'internal', 'identifier'],
+      weak: ['value', 'id', 'data', 'system', 'encoded', 'short'],
+      neg: ['label', 'display', 'shown', 'description', 'human', 'readable'],
+    },
+    valueLabel: {
+      strong: ['label', 'display', 'shown', 'description', 'readable', 'human', 'text'],
+      weak: ['name', 'caption', 'long', 'full', 'decoded'],
+      neg: ['code', 'stored', 'key', 'internal', 'system', 'encoded'],
+    },
+    addValue: {
+      strong: ['value', 'values', 'option', 'options', 'choice', 'choices', 'row', 'item', 'answer', 'response', 'entry'],
+      weak: ['add', 'new', 'create', 'insert', 'append'],
+      neg: ['paste', 'bulk', 'import'],
+    },
+    valuesSection: {
+      strong: ['values', 'choices', 'codes', 'options', 'answers', 'responses', 'items', 'entries', 'codelist'],
+      weak: ['value', 'option', 'choice', 'code', 'list', 'item', 'answer', 'table', 'rows'],
+      neg: [],
+    },
+    pasteBulk: {
+      strong: ['paste', 'bulk', 'batch', 'import', 'mass', 'multiple'],
+      weak: ['values', 'text', 'upload', 'copy', 'csv', 'tsv', 'clipboard'],
+      neg: [],
+    },
+    visibility: {
+      strong: ['visibility', 'visible', 'show', 'shown', 'display', 'skip', 'hidden', 'conditional', 'condition'],
+      weak: ['logic', 'rule', 'when', 'hide', 'appear', 'enabled', 'active', 'available', 'relevant'],
+      neg: [],
+    },
+    conditionalMode: {
+      strong: ['when', 'if', 'condition', 'conditional', 'depends', 'dependent', 'dynamic', 'rule'],
+      weak: ['shown', 'based', 'triggered', 'linked'],
+      neg: ['always', 'never', 'none', 'unconditional', 'static'],
+    },
+    whenField: {
+      strong: ['element', 'field', 'question', 'depends', 'controlling', 'source', 'trigger', 'parent'],
+      weak: ['when', 'control', 'reference', 'linked', 'on', 'based'],
+      neg: ['value', 'equals', 'answer', 'response'],
+    },
+    equalsValue: {
+      strong: ['equals', 'value', 'answer', 'is', 'matches', 'response', 'expected'],
+      weak: ['when', 'compare', 'condition', 'target', 'result'],
+      neg: ['element', 'field', 'question', 'source'],
+    },
+    palette: {
+      strong: ['element', 'elements', 'widget', 'widgets', 'control', 'controls', 'toolbox', 'palette', 'component', 'components', 'library', 'catalog'],
+      weak: ['field', 'fields', 'question', 'questions', 'types', 'tool', 'tools', 'item', 'items', 'drawer', 'panel', 'sidebar', 'rail', 'tray', 'dock'],
+      neg: ['import', 'export'],
+    },
+    back: {
+      strong: ['back', 'return', 'previous', 'parent', 'up'],
+      weak: ['schedule', 'plan', 'home', 'list', 'overview', 'exit', 'leave', 'close', 'navigate', '←', '‹', '<'],
+      neg: [],
+    },
+    preview: {
+      strong: ['preview', 'view', 'readonly'],
+      weak: ['test', 'sample', 'demo'],
+      neg: [],
+    },
+    activate: {
+      strong: ['activate', 'publish', 'release', 'finalize', 'lock', 'approve', 'sign'],
+      weak: ['live', 'deploy', 'enable', 'go', 'production', 'active'],
+      neg: ['deactivate', 'disable', 'unpublish', 'draft'],
+    },
+    navigation: {
+      strong: ['nav', 'navigation', 'menu', 'sidebar', 'tab', 'tabs', 'breadcrumb', 'header'],
+      weak: ['link', 'links', 'panel', 'bar', 'rail', 'drawer', 'tree', 'outline'],
+      neg: [],
+    },
   };
 
   function scoreConcept(text, conceptName) {
@@ -68,6 +223,13 @@
     for (const t of tokens) {
       if (concept.strong.includes(t)) score += 3;
       else if (concept.weak.includes(t)) score += 1;
+      else {
+        // Fuzzy matching for abbreviations and truncations
+        const strongMatch = fuzzyTokenMatch(t, concept.strong);
+        const weakMatch = fuzzyTokenMatch(t, concept.weak);
+        if (strongMatch > 0) score += 3 * strongMatch;
+        else if (weakMatch > 0) score += 1 * weakMatch;
+      }
       if (concept.neg.includes(t)) score -= 3;
     }
     // Mild brevity preference: "Save" should outrank "Save As Template".
@@ -76,19 +238,71 @@
 
   // Canonical field types scored against a palette entry's visible label.
   const TYPE_LEXICON = {
-    text: { strong: ['text', 'textbox', 'string', 'short', 'single', 'answer', 'line'], weak: ['free', 'input'], neg: ['multi', 'area', 'paragraph', 'long', 'number', 'rich', 'list', 'date', 'time'] },
-    textarea: { strong: ['multi', 'area', 'paragraph', 'long', 'memo', 'notes', 'comment', 'essay'], weak: ['text', 'textbox', 'line'], neg: ['single', 'short', 'one', 'list', 'pick', 'select'] },
-    integer: { strong: ['whole', 'integer', 'int', 'counting'], weak: ['number', 'numeric'], neg: ['decimal', 'float', 'fraction', 'fractional'] },
-    decimal: { strong: ['decimal', 'float', 'fraction', 'fractional', 'real'], weak: ['number', 'numeric'], neg: ['whole', 'integer', 'counting'] },
-    date: { strong: ['date', 'calendar', 'day'], weak: [], neg: ['time', 'stamp', 'birth'] },
-    time: { strong: ['time', 'clock'], weak: [], neg: ['date', 'stamp'] },
-    datetime: { strong: ['datetime', 'timestamp', 'stamp'], weak: ['date', 'time'], neg: [] },
-    boolean: { strong: ['yes', 'no', 'boolean', 'toggle', 'switch', 'true', 'false'], weak: ['flag'], neg: ['list', 'check'] },
-    single_select: { strong: ['dropdown', 'picklist', 'combo', 'select', 'pick', 'pulldown', 'menu'], weak: ['list', 'choice', 'choose', 'one', 'single'], neg: ['multi', 'check', 'radio', 'many', 'several', 'all'] },
-    multi_select: { strong: ['multi', 'checklist', 'many', 'several'], weak: ['check', 'list', 'pick', 'select', 'choices', 'all'], neg: ['single', 'one', 'box', 'radio'] },
-    radio: { strong: ['radio', 'option', 'exclusive'], weak: ['buttons', 'choice', 'ring'], neg: ['check', 'list', 'multi'] },
-    checkbox: { strong: ['checkbox', 'tick', 'box'], weak: ['check', 'single'], neg: ['list', 'multi', 'many', 'group', 'several'] },
-    calculated: { strong: ['calculated', 'computed', 'derived', 'formula', 'calculation', 'expression'], weak: ['auto', 'result'], neg: [] },
+    text: {
+      strong: ['text', 'textbox', 'string', 'short', 'single', 'answer', 'line', 'alphanumeric', 'freetext', 'plaintext', 'entry'],
+      weak: ['free', 'input', 'small', 'brief', 'simple', 'basic', 'field'],
+      neg: ['multi', 'area', 'paragraph', 'long', 'number', 'rich', 'list', 'date', 'time', 'formula', 'calculated', 'select', 'dropdown', 'radio', 'check', 'pick', 'combo'],
+    },
+    textarea: {
+      strong: ['multi', 'area', 'paragraph', 'long', 'memo', 'notes', 'comment', 'essay', 'narrative', 'freeform', 'multiline'],
+      weak: ['text', 'textbox', 'line', 'large', 'big', 'extended', 'description', 'remarks', 'block'],
+      neg: ['single', 'short', 'one', 'list', 'pick', 'select', 'number', 'date'],
+    },
+    integer: {
+      strong: ['whole', 'integer', 'int', 'counting'],
+      weak: ['number', 'numeric', 'quantity', 'amount', 'count'],
+      neg: ['decimal', 'float', 'fraction', 'fractional', 'real', 'point'],
+    },
+    decimal: {
+      strong: ['decimal', 'float', 'fraction', 'fractional', 'real', 'double', 'precision', 'point'],
+      weak: ['number', 'numeric', 'quantity', 'amount'],
+      neg: ['whole', 'integer', 'counting', 'int'],
+    },
+    date: {
+      strong: ['date', 'calendar', 'day'],
+      weak: ['picker', 'chooser'],
+      neg: ['time', 'stamp', 'datetime', 'timestamp'],
+    },
+    time: {
+      strong: ['time', 'clock', 'hour'],
+      weak: ['picker', 'chooser'],
+      neg: ['date', 'stamp', 'datetime', 'timestamp'],
+    },
+    datetime: {
+      strong: ['datetime', 'timestamp', 'stamp'],
+      weak: ['date', 'time', 'combined', 'full'],
+      neg: [],
+    },
+    boolean: {
+      strong: ['yes', 'no', 'boolean', 'toggle', 'switch', 'true', 'false', 'yesno'],
+      weak: ['flag', 'binary', 'indicator', 'on', 'off', 'flip'],
+      neg: ['list', 'check', 'select', 'pick', 'multi', 'radio', 'dropdown'],
+    },
+    single_select: {
+      strong: ['dropdown', 'picklist', 'combo', 'select', 'pick', 'pulldown', 'menu', 'combobox', 'listbox'],
+      weak: ['list', 'choice', 'choose', 'one', 'single', 'options', 'lookup', 'reference'],
+      neg: ['multi', 'check', 'radio', 'many', 'several', 'all', 'tick', 'box', 'toggle'],
+    },
+    multi_select: {
+      strong: ['multi', 'checklist', 'many', 'several', 'multiselect', 'checkboxgroup'],
+      weak: ['check', 'list', 'pick', 'select', 'choices', 'all', 'multiple', 'options', 'group'],
+      neg: ['single', 'one', 'box', 'radio', 'toggle', 'yes', 'no'],
+    },
+    radio: {
+      strong: ['radio', 'option', 'exclusive', 'radiogroup', 'buttongroup'],
+      weak: ['buttons', 'choice', 'ring', 'single', 'select', 'pick', 'one'],
+      neg: ['check', 'list', 'multi', 'dropdown', 'combo', 'toggle'],
+    },
+    checkbox: {
+      strong: ['checkbox', 'tick', 'box', 'tickbox', 'checkmark'],
+      weak: ['check', 'single', 'flag', 'boolean', 'consent', 'agree', 'acknowledge'],
+      neg: ['list', 'multi', 'many', 'group', 'several', 'select', 'radio', 'dropdown'],
+    },
+    calculated: {
+      strong: ['calculated', 'computed', 'derived', 'formula', 'calculation', 'expression', 'scripted', 'auto'],
+      weak: ['result', 'output', 'readonly', 'generated', 'dynamic', 'evaluate', 'compute'],
+      neg: [],
+    },
   };
 
   function scoreType(entryLabel, canonicalType) {
@@ -99,6 +313,12 @@
     for (const t of tokens) {
       if (lex.strong.includes(t)) score += 3;
       else if (lex.weak.includes(t)) score += 1;
+      else {
+        const strongMatch = fuzzyTokenMatch(t, lex.strong);
+        const weakMatch = fuzzyTokenMatch(t, lex.weak);
+        if (strongMatch > 0) score += 3 * strongMatch;
+        else if (weakMatch > 0) score += 1 * weakMatch;
+      }
       if (lex.neg.includes(t)) score -= 3;
     }
     // datetime needs both halves; "Date" alone must not win datetime.
@@ -144,5 +364,26 @@
       String(b || '').trim().replace(/\s+/g, ' ').toLowerCase();
   }
 
-  NS.lexicon = { tokenize, scoreConcept, scoreType, rank, margin, CONCEPTS, TYPE_LEXICON, equalsNormalized, hasToken };
+  /**
+   * Fuzzy string similarity based on character n-grams. Returns 0..1.
+   * Used when exact token matching fails to find approximate matches.
+   */
+  function similarity(a, b) {
+    a = String(a || '').trim().toLowerCase();
+    b = String(b || '').trim().toLowerCase();
+    if (a === b) return 1;
+    if (!a || !b) return 0;
+    const n = 2;
+    const grams = (s) => {
+      const g = new Set();
+      for (let i = 0; i <= s.length - n; i++) g.add(s.slice(i, i + n));
+      return g;
+    };
+    const ga = grams(a), gb = grams(b);
+    let inter = 0;
+    for (const g of ga) if (gb.has(g)) inter++;
+    return inter / Math.max(ga.size, gb.size);
+  }
+
+  NS.lexicon = { tokenize, scoreConcept, scoreType, rank, margin, CONCEPTS, TYPE_LEXICON, equalsNormalized, hasToken, similarity, fuzzyTokenMatch };
 })();

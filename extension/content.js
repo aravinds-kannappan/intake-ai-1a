@@ -33,6 +33,12 @@
       if (running) { sendResponse({ ok: false, error: 'already running' }); return; }
       running = true;
       controller = {};
+
+      // Configure LLM module if API key was provided
+      if (msg.apiKey && window.IntakeAgent.llm) {
+        window.IntakeAgent.llm.configure(msg.apiKey, msg.model || 'claude-sonnet-5');
+      }
+
       const send = (payload) => chrome.runtime.sendMessage(payload).catch(() => {});
       window.IntakeAgent.orchestrator
         .run(msg.ir, {

@@ -59,12 +59,27 @@
   async function setText(doc, el, text) {
     el.scrollIntoView({ block: 'center' });
     el.focus();
+
+    // Handle contenteditable elements
+    if (el.getAttribute('contenteditable') != null) {
+      el.textContent = String(text);
+      fire(el, 'input', doc.defaultView.Event);
+      fire(el, 'change', doc.defaultView.Event);
+      el.blur();
+      await settle(doc);
+      return;
+    }
+
     const proto = el.tagName === 'TEXTAREA'
       ? doc.defaultView.HTMLTextAreaElement.prototype
       : doc.defaultView.HTMLInputElement.prototype;
     // Use the native setter so framework value tracking (React et al) notices.
-    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-    setter.call(el, String(text));
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (setter && setter.set) {
+      setter.set.call(el, String(text));
+    } else {
+      el.value = String(text);
+    }
     fire(el, 'input', doc.defaultView.Event);
     fire(el, 'change', doc.defaultView.Event);
     el.blur();
@@ -87,14 +102,42 @@
   /** Select the option whose text or value matches; returns the option text or null. */
   async function selectOption(doc, el, wanted) {
     const eq = NS.lexicon.equalsNormalized;
-    let target = [...el.options].find((o) => eq(o.textContent, wanted)) ||
-      [...el.options].find((o) => eq(o.value, wanted));
-    if (!target) return null;
-    el.scrollIntoView({ block: 'center' });
-    el.value = target.value;
-    fire(el, 'change', doc.defaultView.Event);
-    await settle(doc);
-    return target.textContent.trim();
+
+    // Native <select>
+    if (el.tagName === 'SELECT') {
+      let target = [...el.options].find((o) => eq(o.textContent, wanted)) ||
+        [...el.options].find((o) => eq(o.value, wanted));
+      // Fuzzy fallback for approximate matches
+      if (!target && NS.lexicon.similarity) {
+        const fuzzy = [...el.options]
+          .map((o) => ({ o, sim: Math.max(NS.lexicon.similarity(o.textContent, wanted), NS.lexicon.similarity(o.value, wanted)) }))
+          .filter((x) => x.sim >= 0.7)
+          .sort((a, b) => b.sim - a.sim);
+        if (fuzzy.length > 0) target = fuzzy[0].o;
+      }
+      if (!target) return null;
+      el.scrollIntoView({ block: 'center' });
+      el.value = target.value;
+      fire(el, 'change', doc.defaultView.Event);
+      await settle(doc);
+      return target.textContent.trim();
+    }
+
+    // Custom select (role=combobox/listbox): click to open, then click the option
+    if (el.getAttribute('role') === 'combobox' || el.getAttribute('role') === 'listbox') {
+      await click(doc, el);
+      await settle(doc, 50, 500);
+      const opts = doc.querySelectorAll('[role="option"]');
+      for (const opt of opts) {
+        if (eq(opt.textContent, wanted) || eq(opt.getAttribute('data-value'), wanted)) {
+          await click(doc, opt);
+          return opt.textContent.trim();
+        }
+      }
+      return null;
+    }
+
+    return null;
   }
 
   NS.actions = { settle, click, setText, setCheckbox, selectOption, delay };
