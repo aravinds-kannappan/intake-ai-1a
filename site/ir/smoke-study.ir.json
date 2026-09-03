@@ -1,0 +1,64 @@
+{
+  "ir_version": "1.0",
+  "source": "Smoke test subset — 1 visit, 2 forms, 17 fields covering all canonical types + skip logic",
+  "study": {
+    "protocol_id": "SMOKE-001",
+    "title": "Smoke Test Study"
+  },
+  "visits": [
+    {
+      "name": "Screening",
+      "window_start_day": -28,
+      "window_end_day": -1,
+      "forms": [
+        {
+          "name": "Type Showcase",
+          "repeating": false,
+          "fields": [
+            { "label": "Free Text", "type": "text", "required": true },
+            { "label": "Long Notes", "type": "textarea", "required": false },
+            { "label": "Whole Number", "type": "integer", "required": true, "min": 0, "max": 100, "units": "count" },
+            { "label": "Decimal Value", "type": "decimal", "required": true, "min": 0, "max": 999.9, "units": "mg" },
+            { "label": "Birth Date", "type": "date", "required": true },
+            { "label": "Appointment Time", "type": "time", "required": false },
+            { "label": "Timestamp", "type": "datetime", "required": false },
+            { "label": "Yes No Flag", "type": "boolean", "required": true },
+            { "label": "Pick One", "type": "single_select", "required": true, "options": [{ "code": "A", "label": "Alpha" }, { "code": "B", "label": "Beta" }] },
+            { "label": "Pick Many", "type": "multi_select", "required": false, "options": [{ "code": "X", "label": "Option X" }, { "code": "Y", "label": "Option Y" }] },
+            { "label": "Radio Choice", "type": "radio", "required": true, "options": [{ "code": "1", "label": "First" }, { "code": "2", "label": "Second" }] },
+            { "label": "Single Check", "type": "checkbox", "required": false },
+            { "label": "Computed Field", "type": "calculated", "required": false, "formula": "Whole Number * 2" }
+          ]
+        },
+        {
+          "name": "Eligibility",
+          "repeating": false,
+          "fields": [
+            { "label": "Condition Present", "type": "boolean", "required": true },
+            {
+              "label": "Condition Details",
+              "type": "textarea",
+              "required": false,
+              "skip_logic": { "when_field_label": "Condition Present", "equals_value": "Yes" }
+            },
+            {
+              "label": "Condition Code",
+              "type": "single_select",
+              "required": false,
+              "options": [{ "code": "M1", "label": "Mild" }, { "code": "S1", "label": "Severe" }],
+              "skip_logic": { "when_field_label": "Condition Present", "equals_value": "Yes" }
+            }
+          ]
+        },
+        {
+          "name": "Medication Log",
+          "repeating": true,
+          "fields": [
+            { "label": "Drug Name", "type": "text", "required": true },
+            { "label": "Dose", "type": "decimal", "required": false, "min": 0, "max": 10000, "units": "mg" }
+          ]
+        }
+      ]
+    }
+  ]
+}

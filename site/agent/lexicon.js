@@ -177,9 +177,9 @@
       neg: [],
     },
     conditionalMode: {
-      strong: ['when', 'if', 'condition', 'conditional', 'depends', 'dependent', 'dynamic', 'rule'],
-      weak: ['shown', 'based', 'triggered', 'linked'],
-      neg: ['always', 'never', 'none', 'unconditional', 'static'],
+      strong: ['when', 'if', 'condition', 'conditional', 'depends', 'dependent', 'dynamic', 'rule', 'only'],
+      weak: ['shown', 'based', 'triggered', 'linked', 'show'],
+      neg: ['always', 'never', 'none', 'unconditional', 'static', 'unconditionally'],
     },
     whenField: {
       strong: ['element', 'field', 'question', 'depends', 'controlling', 'source', 'trigger', 'parent'],

@@ -68,7 +68,13 @@
 
   function readVisibility(ctx) {
     const selects = flows.snap(ctx).affordances.filter((a) => a.kind === 'select');
-    const visSel = flows.conceptPick(selects, [{ name: 'visibility' }], { preferExplicitLabel: true })[0];
+    let visSel = flows.conceptPick(selects, [{ name: 'visibility' }], { preferExplicitLabel: true })[0];
+    if (!visSel) {
+      // Fallback: any select whose selected option looks conditional, or whose options include a conditional mode.
+      const hit = selects.find((a) => (a.options || []).some((o) => o.selected && lexicon.scoreConcept(o.text, 'conditionalMode') > 0)) ||
+        selects.find((a) => (a.options || []).some((o) => lexicon.scoreConcept(o.text, 'conditionalMode') > 0));
+      if (hit) visSel = { aff: hit };
+    }
     if (!visSel) return null;
     const mode = visSel.aff.options.find((o) => o.selected);
     const conditional = mode ? lexicon.scoreConcept(mode.text, 'conditionalMode') > 0 : false;
@@ -86,6 +92,18 @@
   function normNum(v) {
     if (v == null) return '';
     return String(v).trim();
+  }
+
+  function equalsValuesMatch(actual, wanted) {
+    const a = String(actual == null ? '' : actual).trim().toLowerCase();
+    const w = String(wanted == null ? '' : wanted).trim();
+    if (a === w.toLowerCase()) return true;
+    const syn = [];
+    const lower = w.toLowerCase();
+    if (lower === 'yes' || lower === 'true' || lower === 'y' || lower === '1') syn.push('yes', 'true', 'y', '1', 'on');
+    else if (lower === 'no' || lower === 'false' || lower === 'n' || lower === '0') syn.push('no', 'false', 'n', '0', 'off');
+    else syn.push(lower);
+    return syn.includes(a);
   }
 
   /** Audit one form (builder must be open). Returns a list of issues. */
@@ -133,7 +151,7 @@
         if (!vis || !vis.conditional) {
           issues.push({ irPath: path, kind: 'skip_logic', expected: 'when "' + field.skip_logic.when_field_label + '" = "' + field.skip_logic.equals_value + '"', actual: 'not conditional', fixable: 'patch' });
         } else if (!lexicon.equalsNormalized(vis.whenLabel, field.skip_logic.when_field_label) ||
-                   normNum(vis.equals) !== normNum(field.skip_logic.equals_value)) {
+                   !equalsValuesMatch(vis.equals, field.skip_logic.equals_value)) {
           issues.push({ irPath: path, kind: 'skip_logic', expected: 'when "' + field.skip_logic.when_field_label + '" = "' + field.skip_logic.equals_value + '"', actual: 'when "' + (vis.whenLabel || '?') + '" = "' + (vis.equals || '') + '"', fixable: 'patch' });
         }
       }

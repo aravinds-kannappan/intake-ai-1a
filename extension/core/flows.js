@@ -919,61 +919,171 @@
     const rule = field.skip_logic;
     if (!rule) return true;
     if (!(await selectFieldCard(ctx, field.label))) {
-      ctx.report.warnings.push(irPath + ': could not select the element to set its skip logic');
-      return false;
+      return escalateSkip(ctx, field, irPath, 'Could not select the field on the canvas to edit its condition.');
     }
-    const selects = snap(ctx).affordances.filter((a) => a.kind === 'select');
-    const visSel = conceptPick(selects, [{ name: 'visibility' }], { preferExplicitLabel: true })[0];
-    if (!visSel) {
-      ctx.report.warnings.push(irPath + ': no visibility/condition control found; skip logic NOT set');
-      return false;
+
+    // Prefer a memoized visibility control from an earlier successful set on this platform.
+    let ok = false;
+    if (ctx.calib.skipVisDesc) {
+      ok = await trySkipWithVis(ctx, field, rule, irPath, ctx.calib.skipVisDesc);
     }
-    const condOpt = visSel.aff.options
+    if (!ok) {
+      // Rank every select: concept score first, then try candidates (same discipline as save calibration).
+      const selects = snap(ctx).affordances.filter((a) => a.kind === 'select' && !a.disabled);
+      const ranked = selects
+        .map((a) => ({
+          aff: a,
+          score: lexicon.scoreConcept(a.name, 'visibility') +
+            a.context.reduce((s, c) => s + lexicon.scoreConcept(c, 'visibility'), 0) +
+            (a.explicitLabel ? 0.5 : 0),
+        }))
+        .sort((a, b) => b.score - a.score);
+      const ordered = [
+        ...ranked.filter((x) => x.score > 0).map((x) => x.aff),
+        ...ranked.filter((x) => x.score <= 0).map((x) => x.aff),
+      ];
+      const tried = [];
+      for (const cand of ordered.slice(0, 8)) {
+        const desc = snapMod.describe(cand);
+        tried.push('"' + cand.name + '" options=[' + (cand.options || []).map((o) => o.text).filter(Boolean).slice(0, 6).join(' | ') + ']');
+        if (await trySkipWithVis(ctx, field, rule, irPath, desc)) {
+          ctx.calib.skipVisDesc = desc;
+          ok = true;
+          break;
+        }
+        await resetVisibilityIfPossible(ctx, desc);
+      }
+      if (!ok) {
+        return escalateSkip(ctx, field, irPath,
+          'Tried visibility/condition controls; none produced a verified skip rule.',
+          tried);
+      }
+    }
+
+    // Read-back: do not trust the clicks.
+    if (!(await selectFieldCard(ctx, field.label))) {
+      return escalateSkip(ctx, field, irPath, 'Set the rule but could not re-select the field to verify it.');
+    }
+    const vis = NS.verify && NS.verify.readVisibility ? NS.verify.readVisibility(ctx) : null;
+    if (vis && vis.conditional &&
+        lexicon.equalsNormalized(vis.whenLabel, rule.when_field_label) &&
+        equalsMatch(vis.equals, rule.equals_value)) {
+      ctx.log('verify', 'skip logic confirmed: when "' + rule.when_field_label + '" = "' + rule.equals_value + '"', irPath);
+      return true;
+    }
+    if (vis && vis.conditional && lexicon.equalsNormalized(vis.whenLabel, rule.when_field_label)) {
+      ctx.log('verify', 'skip logic conditional+controller ok (equals read as ' + JSON.stringify(vis.equals) + ')', irPath);
+      return true;
+    }
+    return escalateSkip(ctx, field, irPath,
+      'After setting the rule, read-back still says: ' +
+      (vis ? (vis.conditional ? 'when "' + (vis.whenLabel || '?') + '" = "' + (vis.equals || '') + '"' : 'not conditional') : 'could not read visibility'));
+  }
+
+  function equalsCandidates(wanted) {
+    const w = String(wanted == null ? '' : wanted).trim();
+    const out = [w];
+    const lower = w.toLowerCase();
+    if (lower === 'yes' || lower === 'true' || lower === 'y' || lower === '1') {
+      out.push('Yes', 'true', 'True', 'TRUE', 'Y', 'y', '1', 'on', 'On');
+    } else if (lower === 'no' || lower === 'false' || lower === 'n' || lower === '0') {
+      out.push('No', 'false', 'False', 'FALSE', 'N', 'n', '0', 'off', 'Off');
+    }
+    return [...new Set(out.filter(Boolean))];
+  }
+
+  function equalsMatch(actual, wanted) {
+    const a = String(actual == null ? '' : actual).trim().toLowerCase();
+    return equalsCandidates(wanted).some((c) => String(c).trim().toLowerCase() === a);
+  }
+
+  async function trySkipWithVis(ctx, field, rule, irPath, visDesc) {
+    if (!(await selectFieldCard(ctx, field.label))) return false;
+    const liveVis = snapMod.resolve(ctx.doc, visDesc);
+    if (!liveVis || liveVis.kind !== 'select') return false;
+    const options = liveVis.options || [];
+    const condOpt = options
       .map((o) => ({ o, score: lexicon.scoreConcept(o.text, 'conditionalMode') }))
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score)[0];
-    if (!condOpt) {
-      ctx.report.warnings.push(irPath + ': visibility control has no conditional option');
-      return false;
-    }
-    ctx.log('action', 'set visibility to "' + condOpt.o.text + '"', irPath);
-    const liveVis = snapMod.resolve(ctx.doc, snapMod.describe(visSel.aff));
+    if (!condOpt) return false;
+
+    const before = snap(ctx);
+    ctx.log('action', 'set visibility to "' + condOpt.o.text + '" via "' + liveVis.name + '"', irPath);
     await actions.selectOption(ctx.doc, liveVis.el, condOpt.o.text);
-    const selects2 = snap(ctx).affordances.filter((a) => a.kind === 'select' && a.signature !== liveVis.signature);
-    const whenSel = conceptPick(selects2, [{ name: 'whenField' }], { preferExplicitLabel: true })[0] ||
-      selects2.map((a) => ({ aff: a })).find((x) => x.aff.options.some((o) => lexicon.equalsNormalized(o.text, rule.when_field_label)));
+    await actions.settle(ctx.doc);
+
+    let selects2 = snap(ctx).affordances.filter((a) => a.kind === 'select' && a.signature !== liveVis.signature);
+    const appeared = snapMod.appeared(before, snap(ctx)).filter((a) => a.kind === 'select');
+    if (appeared.length) selects2 = appeared.concat(selects2.filter((a) => !appeared.some((p) => p.signature === a.signature)));
+
+    let whenSel = conceptPick(selects2, [{ name: 'whenField' }], { preferExplicitLabel: true })[0];
     if (!whenSel) {
-      const res = await ctx.ask({
-        kind: 'skip-logic', irPath,
-        question: 'I set "' + field.label + '" to conditional visibility but cannot find the control that picks the controlling field ("' + rule.when_field_label + '"). Set the rule by hand, then choose Done.',
-        evidence: ['Rule: show when "' + rule.when_field_label + '" equals "' + rule.equals_value + '"'],
-        options: [{ id: 'done', label: 'Done (rule set by hand)' }, { id: 'skip', label: 'Skip this rule' }],
-      });
-      if (res.optionId === 'skip') ctx.report.warnings.push(irPath + ': skip logic rule not set');
-      return res.optionId === 'done';
+      const hit = selects2.find((a) => (a.options || []).some((o) =>
+        lexicon.equalsNormalized(o.text, rule.when_field_label) ||
+        lexicon.similarity(o.text, rule.when_field_label) >= 0.8));
+      if (hit) whenSel = { aff: hit };
     }
-    const picked = await actions.selectOption(ctx.doc, snapMod.resolve(ctx.doc, snapMod.describe(whenSel.aff)).el, rule.when_field_label);
+    if (!whenSel) return false;
+
+    const whenLive = snapMod.resolve(ctx.doc, snapMod.describe(whenSel.aff));
+    if (!whenLive) return false;
+    let picked = await actions.selectOption(ctx.doc, whenLive.el, rule.when_field_label);
     if (!picked) {
-      // Try fuzzy match on the when_field_label
-      const fuzzyPick = whenSel.aff.options
+      const fuzzy = (whenLive.options || [])
         .map((o) => ({ o, sim: lexicon.similarity(o.text, rule.when_field_label) }))
         .filter((x) => x.sim >= 0.7)
         .sort((a, b) => b.sim - a.sim)[0];
-      if (fuzzyPick) {
-        await actions.selectOption(ctx.doc, snapMod.resolve(ctx.doc, snapMod.describe(whenSel.aff)).el, fuzzyPick.o.text);
-      } else {
-        const res = await ctx.ask({
-          kind: 'skip-logic', irPath,
-          question: 'The controlling field "' + rule.when_field_label + '" is not offered by the condition control for "' + field.label + '". It may not exist yet or its label may differ.',
-          evidence: ['Offered: ' + whenSel.aff.options.map((o) => o.text).filter(Boolean).slice(0, 30).join(' | ')],
-          options: [{ id: 'done', label: 'Done (rule set by hand)' }, { id: 'skip', label: 'Skip this rule' }],
-        });
-        if (res.optionId === 'skip') ctx.report.warnings.push(irPath + ': skip logic controller not found');
-        return res.optionId === 'done';
+      if (!fuzzy) return false;
+      picked = await actions.selectOption(ctx.doc, whenLive.el, fuzzy.o.text);
+      if (!picked) return false;
+    }
+
+    let equalsOk = false;
+    const eqPool = textboxes(snap(ctx));
+    const eqCand = conceptPick(eqPool, [{ name: 'equalsValue' }], { preferExplicitLabel: true, avoidValuesSection: true })[0] ||
+      conceptPick(snapMod.appeared(before, snap(ctx)).filter((a) => a.kind === 'textbox'), [{ name: 'equalsValue' }])[0];
+    if (eqCand) {
+      const live = snapMod.resolve(ctx.doc, snapMod.describe(eqCand.aff)) || eqCand.aff;
+      for (const candidate of equalsCandidates(rule.equals_value)) {
+        await typeInto(ctx, live, candidate, irPath + ' (equals)');
+        equalsOk = true;
+        break;
+      }
+    } else {
+      const boxes = snapMod.appeared(before, snap(ctx)).filter((a) => a.kind === 'textbox' && a.explicitLabel);
+      if (boxes[0]) {
+        await typeInto(ctx, boxes[0], String(equalsCandidates(rule.equals_value)[0]), irPath + ' (equals)');
+        equalsOk = true;
       }
     }
-    await setFacetInput(ctx, [], 'equalsValue', String(rule.equals_value), irPath);
-    ctx.log('verify', 'skip logic: show when "' + rule.when_field_label + '" = "' + rule.equals_value + '"', irPath);
+    return equalsOk;
+  }
+
+  async function resetVisibilityIfPossible(ctx, visDesc) {
+    const live = snapMod.resolve(ctx.doc, visDesc);
+    if (!live || !live.options) return;
+    const alwaysOpt = live.options.find((o) => /^always/i.test(o.text.trim())) ||
+      live.options.find((o) => lexicon.scoreConcept(o.text, 'conditionalMode') <= 0 && /always/i.test(o.text));
+    if (alwaysOpt) await actions.selectOption(ctx.doc, live.el, alwaysOpt.text);
+  }
+
+  async function escalateSkip(ctx, field, irPath, reason, tried) {
+    const rule = field.skip_logic;
+    const res = await ctx.ask({
+      kind: 'skip-logic', irPath,
+      question: 'I could not verify skip logic for "' + field.label + '". Set it by hand, then choose Done.',
+      evidence: [
+        'Rule: show when "' + rule.when_field_label + '" equals "' + rule.equals_value + '"',
+        reason,
+        ...(tried && tried.length ? ['Tried: ' + tried.slice(0, 6).join('; ')] : []),
+      ],
+      options: [{ id: 'done', label: 'Done (rule set by hand)' }, { id: 'skip', label: 'Skip this rule' }],
+    });
+    if (res.optionId === 'skip') {
+      ctx.report.warnings.push(irPath + ': skip logic not verified — ' + reason);
+      return false;
+    }
     return true;
   }
 
