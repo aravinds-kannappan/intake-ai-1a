@@ -131,6 +131,7 @@
             await flows.enterBuilder(ctx, form.name, formPath);
             ctx.emit('calibrate', 'finding the control that really saves');
             await flows.calibrateSave(ctx, visit.name, form.name);
+            await flows.confirmCalibration(ctx);
             calibrated = true;
           }
 

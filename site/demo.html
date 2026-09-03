@@ -29,7 +29,8 @@ iframe { width:100%; height:100%; border:0; background:#fff; }
 .counter { background:var(--card); border:1px solid var(--line); border-radius:6px; padding:6px 9px; }
 .counter b { font-size:15px; display:block; }
 .counter span { color:var(--muted); font-size:11px; }
-#gate { border:1px solid var(--warn); border-radius:8px; padding:10px; background:#1d1a12; margin-top:14px; }
+#gate { border:1px solid var(--warn); border-radius:8px; padding:10px; background:#1d1a12; margin-top:14px; position:sticky; top:8px; z-index:5; }
+#gate[hidden] { display:none !important; }
 #gate .q { font-weight:600; margin-bottom:6px; }
 #gate .evidence { color:var(--muted); font-size:12px; margin:6px 0; white-space:pre-wrap; }
 #gate button { display:block; width:100%; text-align:left; margin:4px 0; background:var(--card); color:var(--text); border:1px solid var(--line); }
@@ -55,7 +56,7 @@ label.chk { color:var(--muted); font-size:12px; display:flex; gap:6px; align-ite
       <option value="mock-a2/index.html">Mock A2 (mutated: renamed palette, moved save)</option>
       <option value="mock-b/index.html">Mock B (my second platform)</option>
     </select>
-    <label class="chk"><input type="checkbox" id="handsfree"> Hands-free (auto-accept suggestions)</label>
+    <label class="chk"><input type="checkbox" id="handsfree"> Hands-free (auto-accept the gate — leave off to click decisions yourself)</label>
     <button id="run">Run agent</button>
     <button id="stop" class="secondary" disabled>Stop</button>
     <button id="reset" class="secondary">Reset mock</button>
@@ -133,6 +134,7 @@ function gate(item){
       return;
     }
     const g=$('gate'); g.hidden=false; g.innerHTML='';
+    const h=document.createElement('h2'); h.textContent='Needs your decision — run is paused'; g.appendChild(h);
     const q=document.createElement('div'); q.className='q'; q.textContent=item.question; g.appendChild(q);
     if(item.irPath){ const p=document.createElement('div'); p.className='evidence'; p.textContent=item.irPath; g.appendChild(p); }
     if(item.evidence && item.evidence.length){ const ev=document.createElement('div'); ev.className='evidence'; ev.textContent=item.evidence.join('\n'); g.appendChild(ev); }

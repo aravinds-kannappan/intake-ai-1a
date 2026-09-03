@@ -25,27 +25,25 @@
    */
   function discoverPalette(snap) {
     const buttons = snap.affordances.filter((a) => a.kind === 'button' && !a.inModal);
-    // Group buttons by their nearest list-ish container.
-    const groups = new Map();
-    for (const a of buttons) {
-      const container = a.el.parentElement && a.el.parentElement.closest('ul, ol, aside, nav, [role="list"], [role="toolbar"], [role="tablist"], section, div, menu');
-      if (!container) continue;
-      if (!groups.has(container)) groups.set(container, []);
-      groups.get(container).push(a);
-    }
-    let clusters = [...groups.entries()]
-      .map(([container, items]) => ({ container, items }))
-      .filter((g) => g.items.length >= 6);
-
-    // Fallback: if no cluster >= 6, try >= 4 (smaller palettes exist)
-    if (clusters.length === 0) {
-      clusters = [...groups.entries()]
+    function clustersAt(getContainer) {
+      const groups = new Map();
+      for (const a of buttons) {
+        const container = getContainer(a);
+        if (!container || container === snap.doc.body || container === snap.doc.documentElement) continue;
+        if (!groups.has(container)) groups.set(container, []);
+        groups.get(container).push(a);
+      }
+      return [...groups.entries()]
         .map(([container, items]) => ({ container, items }))
         .filter((g) => g.items.length >= 4);
     }
-
+    // Immediate siblings first (real palettes). Walking to a distant <div>
+    // would glue every button on the page into one fake library.
+    let clusters = clustersAt((a) => a.el.parentElement);
+    if (clusters.length === 0) {
+      clusters = clustersAt((a) => a.el.parentElement && a.el.parentElement.parentElement);
+    }
     if (clusters.length === 0) return [];
-    // Prefer the cluster whose context scores highest for the palette concept.
     clusters.sort((a, b) => paletteScore(b) - paletteScore(a));
     return clusters[0].items;
   }
@@ -141,6 +139,10 @@
         facets.preview.timePlaceholder = true;
       } else if (a.inputType === 'date') facets.preview.datePlaceholder = true;
       else if (a.inputType === 'time') facets.preview.timePlaceholder = true;
+      else if (a.kind === 'select') facets.preview.select++;
+      else if (a.kind === 'radio') facets.preview.radio++;
+      else if (a.kind === 'checkbox') facets.preview.checkbox++;
+      else if (a.kind === 'textarea') facets.preview.textarea++;
     }
     return facets;
   }

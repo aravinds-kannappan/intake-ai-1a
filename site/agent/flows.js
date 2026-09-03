@@ -13,7 +13,7 @@
   const NS = (window.IntakeAgent = window.IntakeAgent || {});
   const { lexicon, snapshot: snapMod, actions, mapper } = NS;
 
-  const TYPE_CONF_THRESHOLD = 0.25;
+  const TYPE_CONF_THRESHOLD = 0.45;
 
   function snap(ctx) { return snapMod.snapshot(ctx.doc); }
   function buttons(s) { return s.affordances.filter((a) => a.kind === 'button' && !a.disabled); }
@@ -137,7 +137,8 @@
     return false;
   }
 
-  async function ensureScheduleScreen(ctx) {
+  async function ensureScheduleScreen(ctx, attempt) {
+    attempt = attempt || 0;
     let s = snap(ctx);
     if (addVisitCandidates(s).length > 0) return true;
 
@@ -188,7 +189,7 @@
       evidence: ['No control matching "add visit" was found on the current screen.'],
       options: [{ id: 'retry', label: 'Retry (I navigated there)' }, { id: 'abort', label: 'Abort the run' }],
     });
-    if (res.optionId === 'retry') return ensureScheduleScreen(ctx);
+    if (res.optionId === 'retry' && attempt < 2) return ensureScheduleScreen(ctx, attempt + 1);
     throw new Error('aborted: schedule screen not found');
   }
 
@@ -545,7 +546,7 @@
       if (best && best.score > 0) {
         typeMap[t] = {
           label: best.entry.label, desc: best.entry.desc,
-          confidence: Math.max(best.entry.cls.confidence, 0.5),
+          confidence: best.entry.cls.confidence,
           evidence: (best.entry.cls.evidence || []).concat(['leftover palette entry assigned to unmapped type']),
           ranking: best.entry.cls.ranking,
         };
@@ -699,15 +700,26 @@
   async function mappingFor(ctx, canonicalType, irPath) {
     let entry = ctx.calib.typeMap[canonicalType];
     if (entry && (entry.confidence >= TYPE_CONF_THRESHOLD || entry.humanConfirmed)) return entry;
+
+    const used = new Set(Object.values(ctx.calib.typeMap || {}).map((e) => e.label));
+    const unused = (ctx.calib.entries || []).filter((e) => !e.inert && !used.has(e.label));
+    const ranked = unused.map((e) => {
+      const r = (e.cls.ranking || []).find((x) => x.type === canonicalType);
+      let score = r ? r.score : -99;
+      if (e.cls.best && e.cls.best.type === canonicalType) score += 4;
+      return { entry: e, score };
+    }).sort((a, b) => b.score - a.score);
+    const suggestion = (entry && entry.label) || (ranked[0] && ranked[0].entry.label) || null;
+
     const paletteOptions = (ctx.calib.entries || []).filter((e) => !e.inert)
       .map((e) => ({ id: e.label, label: e.label, detail: 'probe said: ' + e.cls.best.type + ' (conf ' + e.cls.confidence.toFixed(2) + ')' }));
     const res = await ctx.ask({
       kind: 'type-mapping', irPath,
       question: 'Which palette entry should represent the canonical type "' + canonicalType + '"?',
       evidence: entry
-        ? ['Best guess: "' + entry.label + '" (confidence ' + entry.confidence.toFixed(2) + ')'].concat(entry.evidence)
-        : ['No palette entry scored positively for this type.'],
-      suggestion: entry ? entry.label : null,
+        ? ['Best guess: "' + entry.label + '" (confidence ' + Number(entry.confidence).toFixed(2) + ')'].concat(entry.evidence || [])
+        : ['No palette entry was mapped with high confidence for this type.'],
+      suggestion: suggestion,
       options: paletteOptions,
       meta: { canonicalType, entries: (ctx.calib.entries || []).map((e) => ({ label: e.label, inert: !!e.inert, best: e.inert ? null : e.cls.best.type, confidence: e.inert ? 0 : e.cls.confidence, evidence: e.inert ? [] : e.cls.evidence })) },
     });
@@ -716,6 +728,34 @@
     entry = { label: chosen.label, desc: chosen.desc, confidence: 1, evidence: ['confirmed by reviewer'], humanConfirmed: true };
     ctx.calib.typeMap[canonicalType] = entry;
     return entry;
+  }
+
+  async function confirmCalibration(ctx) {
+    const lines = [];
+    for (const [canonical, entry] of Object.entries(ctx.calib.typeMap || {})) {
+      lines.push(canonical + '  →  "' + entry.label + '"  (confidence ' + Number(entry.confidence).toFixed(2) + ')');
+    }
+    const saveName = ctx.calib.saveDesc ? ctx.calib.saveDesc.name : '(not found)';
+    lines.push('Save control: "' + saveName + '" (confirmed by persistence probe)');
+    const res = await ctx.ask({
+      kind: 'confirm-mapping',
+      irPath: 'calibration',
+      question: 'I probed this platform\'s element library. Accept this type map and save control, then I will build the study?',
+      evidence: lines,
+      suggestion: 'accept',
+      options: [
+        { id: 'accept', label: 'Accept and start building' },
+        { id: 'review', label: 'I want to confirm low-confidence types one by one' },
+      ],
+    });
+    if (res.optionId === 'review') {
+      for (const entry of Object.values(ctx.calib.typeMap || {})) {
+        if (entry.confidence < TYPE_CONF_THRESHOLD) entry.humanConfirmed = false;
+        else entry.humanConfirmed = true;
+      }
+    } else {
+      for (const entry of Object.values(ctx.calib.typeMap || {})) entry.humanConfirmed = true;
+    }
   }
 
   async function setFacetInput(ctx, appearedAffs, concept, value, irPath) {
@@ -974,6 +1014,6 @@
     ensureScheduleScreen, visitExists, createVisit, openVisit, backToSchedule,
     formExists, createForm, enterBuilder, leaveBuilder, inBuilder,
     calibrateTypes, calibrateSave, mappingFor, buildField, selectFieldCard,
-    applySkipLogic, saveForm, renameSelected, labelInputCandidates, enterValues, cleanupSentinel, deleteSelectedElement,
+    applySkipLogic, saveForm, renameSelected, labelInputCandidates, enterValues, cleanupSentinel, deleteSelectedElement, confirmCalibration,
   };
 })();

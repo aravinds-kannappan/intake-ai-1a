@@ -213,7 +213,46 @@
       aff.signature = aff.kind + '|' + aff.name + '|' + aff.context.join('>');
       affordances.push(aff);
     }
+    harvestPointerTiles(doc, affordances, seen);
     return { doc, affordances, takenAt: Date.now() };
+  }
+
+  /**
+   * Palettes are often bare <div>s with cursor:pointer and short labels, no
+   * role and no tabindex. If a parent holds many such siblings, treat them as
+   * buttons so calibration can probe them on an unseen platform.
+   */
+  function harvestPointerTiles(doc, affordances, seen) {
+    const win = doc.defaultView;
+    if (!win) return;
+    const parents = doc.querySelectorAll('ul, ol, aside, nav, section, div, menu');
+    for (const parent of parents) {
+      const kids = [];
+      for (const child of parent.children) {
+        if (seen.has(child)) continue;
+        if (!isVisible(child)) continue;
+        if (kindOf(child)) continue;
+        const dt = directText(child) || (child.textContent || '').trim();
+        if (!dt || dt.length > 48) continue;
+        if (child.children.length > 3) continue;
+        const style = win.getComputedStyle(child);
+        if (style.cursor !== 'pointer') continue;
+        kids.push({ el: child, dt });
+      }
+      if (kids.length < 6) continue;
+      for (const { el, dt } of kids) {
+        seen.add(el);
+        const aff = {
+          el, kind: 'button', explicitLabel: false, name: dt,
+          text: dt, value: '', checked: undefined, inputType: null, placeholder: '',
+          options: null, disabled: false, context: context(el),
+          inModal: !!el.closest('[aria-modal="true"], [role="dialog"], dialog'),
+          index: affordances.length,
+        };
+        aff.signature = aff.kind + '|' + aff.name + '|' + aff.context.join('>');
+        affordances.push(aff);
+      }
+    }
   }
 
   /** Extract options from a role="listbox" element. */

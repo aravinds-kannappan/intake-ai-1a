@@ -4,4 +4,4 @@ dist/
 *.log
 site/generated-mocks/
 docs/batch-results.json
-scripts/node_modules/
+scripts/
