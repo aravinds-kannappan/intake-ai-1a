@@ -504,7 +504,57 @@
     return !inBuilder(ctx);
   }
 
-  // ── calibration ────────────────────────────────────────────────────────────
+  function fieldRemoveCandidates(ctx) {
+    return buttons(snap(ctx))
+      .map((a) => {
+        let score = lexicon.scoreConcept(a.name, 'remove');
+        if (/^[x×✕]$/i.test((a.text || a.name || '').trim())) score += 2;
+        if (lexicon.hasToken(a.name, ['question', 'element', 'field', 'item', 'control', 'widget'])) score += 3;
+        if (lexicon.hasToken(a.name, ['form', 'document', 'instrument', 'crf', 'visit', 'encounter', 'page', 'row'])) score -= 6;
+        return { aff: a, score };
+      })
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score);
+  }
+
+  async function deleteSelectedElement(ctx, labelHint) {
+    const label = labelHint || currentSelectionLabel(ctx);
+    const beforeCount = label ? findFieldText(ctx.doc, label).length : 0;
+    for (const cand of fieldRemoveCandidates(ctx).slice(0, 5)) {
+      await clickAff(ctx, cand.aff, 'remove selected element');
+      if (label && findFieldText(ctx.doc, label).length < Math.max(1, beforeCount)) return true;
+      if (!label && currentSelectionLabel(ctx) !== label) return true;
+    }
+    return false;
+  }
+
+  function fillUnmappedTypes(ctx, typeMap, entries) {
+    const used = new Set(Object.values(typeMap).map((e) => e.label));
+    for (const t of mapper.CANONICAL_TYPES) {
+      if (typeMap[t]) continue;
+      let best = null;
+      for (const e of entries) {
+        if (e.inert || used.has(e.label)) continue;
+        const r = (e.cls.ranking || []).find((x) => x.type === t);
+        let score = r ? r.score : -99;
+        if (t === 'datetime' && e.facets && e.facets.preview.datetimeInput > 0) score += 20;
+        if (t === 'date' && e.facets && e.facets.preview.datePlaceholder && !e.facets.preview.timePlaceholder && !e.facets.preview.datetimeInput) score += 8;
+        if (t === 'time' && e.facets && e.facets.preview.timePlaceholder && !e.facets.preview.datePlaceholder) score += 8;
+        if (!best || score > best.score) best = { entry: e, score };
+      }
+      if (best && best.score > 0) {
+        typeMap[t] = {
+          label: best.entry.label, desc: best.entry.desc,
+          confidence: Math.max(best.entry.cls.confidence, 0.5),
+          evidence: (best.entry.cls.evidence || []).concat(['leftover palette entry assigned to unmapped type']),
+          ranking: best.entry.cls.ranking,
+        };
+        used.add(best.entry.label);
+        ctx.log('info', 'assigned leftover "' + best.entry.label + '" to ' + t, 'calibration');
+      }
+    }
+    return typeMap;
+  }
 
   async function calibrateTypes(ctx) {
     const s = snap(ctx);
@@ -518,18 +568,25 @@
       if (!resolved) continue;
       await clickAff(ctx, resolved, 'probe palette entry');
       const after = snap(ctx);
-      const appearedAffs = snapMod.appeared(before, after);
+      let appearedAffs = snapMod.appeared(before, after);
+      // Full re-render platforms recreate the whole DOM; the appeared-diff can miss
+      // preview controls whose signatures collide with palette items. Supplement
+      // with any preview inputs (date/time/datetime-local) visible after the click.
+      const previewInputs = after.affordances.filter((a) =>
+        (a.inputType === 'datetime-local' || a.inputType === 'date' || a.inputType === 'time') &&
+        !a.explicitLabel &&
+        !appearedAffs.some((x) => x.signature === a.signature));
+      appearedAffs = appearedAffs.concat(previewInputs);
       if (appearedAffs.length === 0) {
         ctx.log('info', 'palette entry "' + item.name + '" did nothing; marking inert', 'calibration');
         entries.push({ label: item.name, inert: true });
         continue;
       }
-      const facets = mapper.readFacets(appearedAffs);
+      const facets = mapper.mergeLivePreview(mapper.readFacets(appearedAffs), after.affordances);
       const cls = mapper.classify(item.name, facets);
       entries.push({ label: item.name, desc: snapMod.describe(item), facets, cls });
       ctx.log('info', 'probed "' + item.name + '" -> ' + cls.best.type + ' (conf ' + cls.confidence.toFixed(2) + '): ' + cls.evidence.join('; '), 'calibration');
-      const del = conceptPick(snapMod.appeared(before, snap(ctx)).filter((a) => a.kind === 'button'), [{ name: 'remove' }])[0];
-      if (del) await clickAff(ctx, del.aff, 'remove probe element');
+      await deleteSelectedElement(ctx, item.name);
     }
     // Assign entries to canonical types: greedy best-score first.
     const typeMap = {};
@@ -564,7 +621,7 @@
     }
 
     ctx.calib.entries = entries;
-    ctx.calib.typeMap = typeMap;
+    ctx.calib.typeMap = fillUnmappedTypes(ctx, typeMap, entries);
     return typeMap;
   }
 
@@ -610,13 +667,16 @@
       if (persisted) {
         ctx.calib.saveDesc = snapMod.describe(cand.aff);
         ctx.log('verify', 'save control confirmed by persistence probe: "' + cand.aff.name + '"', 'calibration');
-        const node = findFieldText(ctx.doc, SENTINEL)[0];
-        await actions.click(ctx.doc, node);
-        const del = conceptPick(buttons(snap(ctx)), [{ name: 'remove' }])
-          .filter((c) => lexicon.scoreConcept(c.aff.name, 'form') <= 0)[0];
-        if (del) await clickAff(ctx, del.aff, 'remove sentinel element');
+        if (await selectFieldCard(ctx, SENTINEL)) {
+          await deleteSelectedElement(ctx, SENTINEL);
+        }
         const save = snapMod.resolve(ctx.doc, ctx.calib.saveDesc);
         if (save) await clickAff(ctx, save, 'persist sentinel removal');
+        if (findFieldText(ctx.doc, SENTINEL).length > 0 && await selectFieldCard(ctx, SENTINEL)) {
+          await deleteSelectedElement(ctx, SENTINEL);
+          const save2 = snapMod.resolve(ctx.doc, ctx.calib.saveDesc);
+          if (save2) await clickAff(ctx, save2, 'persist forced sentinel removal');
+        }
         return true;
       }
       ctx.log('info', 'candidate "' + cand.aff.name + '" did NOT persist; content was lost on navigation. Trying next.', 'calibration');
@@ -877,6 +937,19 @@
     return true;
   }
 
+  async function cleanupSentinel(ctx) {
+    const SENTINEL = 'Probe Field ZQX';
+    if (findFieldText(ctx.doc, SENTINEL).length === 0) return;
+    ctx.log('info', 'removing leaked calibration sentinel', 'calibration');
+    if (await selectFieldCard(ctx, SENTINEL)) {
+      await deleteSelectedElement(ctx, SENTINEL);
+      if (ctx.calib.saveDesc) {
+        const save = snapMod.resolve(ctx.doc, ctx.calib.saveDesc);
+        if (save) await clickAff(ctx, save, 'persist sentinel removal');
+      }
+    }
+  }
+
   async function saveForm(ctx, irPath) {
     if (!ctx.calib.saveDesc) throw new Error('save control not calibrated');
     const save = snapMod.resolve(ctx.doc, ctx.calib.saveDesc);
@@ -901,6 +974,6 @@
     ensureScheduleScreen, visitExists, createVisit, openVisit, backToSchedule,
     formExists, createForm, enterBuilder, leaveBuilder, inBuilder,
     calibrateTypes, calibrateSave, mappingFor, buildField, selectFieldCard,
-    applySkipLogic, saveForm, renameSelected, labelInputCandidates, enterValues,
+    applySkipLogic, saveForm, renameSelected, labelInputCandidates, enterValues, cleanupSentinel, deleteSelectedElement,
   };
 })();

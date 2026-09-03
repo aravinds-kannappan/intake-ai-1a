@@ -28,8 +28,12 @@
   function fuzzyTokenMatch(token, listTokens) {
     for (const lt of listTokens) {
       if (token === lt) return 1.0;
-      if (token.length >= 3 && lt.startsWith(token)) return 0.7;
-      if (lt.length >= 3 && token.startsWith(lt)) return 0.7;
+      // Prefix only when the words are almost the same length. Otherwise
+      // "question" matches "questionnaire" and a field-delete button is
+      // treated as a form-level control.
+      const shorter = token.length <= lt.length ? token : lt;
+      const longer = token.length <= lt.length ? lt : token;
+      if (shorter.length >= 4 && longer.startsWith(shorter) && (longer.length - shorter.length) <= 2) return 0.7;
     }
     return 0;
   }
@@ -54,7 +58,7 @@
     },
     add: {
       strong: ['add', 'new', 'create', 'insert'],
-      weak: ['plus', 'attach', 'append', 'register', '＋'],
+      weak: ['plus', 'attach', 'append', 'register', '＋', '+'],
       neg: ['value', 'page', 'option'],
     },
     save: {
@@ -270,7 +274,7 @@
     },
     datetime: {
       strong: ['datetime', 'timestamp', 'stamp'],
-      weak: ['date', 'time', 'combined', 'full'],
+      weak: ['date', 'time', 'combined', 'full', 'moment'],
       neg: [],
     },
     boolean: {
@@ -321,11 +325,12 @@
       }
       if (lex.neg.includes(t)) score -= 3;
     }
-    // datetime needs both halves; "Date" alone must not win datetime.
+    // datetime needs both halves in the label, OR an unambiguous marker like "moment"/"datetime".
     if (canonicalType === 'datetime') {
       const hasDate = tokens.includes('date') || tokens.includes('datetime') || tokens.includes('timestamp') || tokens.includes('stamp');
       const hasTime = tokens.includes('time') || tokens.includes('datetime') || tokens.includes('timestamp') || tokens.includes('stamp');
-      if (hasDate && hasTime) score += 4;
+      const hasMoment = tokens.includes('moment') || tokens.includes('datetime');
+      if ((hasDate && hasTime) || hasMoment) score += 4;
       else score -= 2;
     }
     return score;

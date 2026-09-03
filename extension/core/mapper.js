@@ -65,7 +65,7 @@
     const facets = {
       hasFormula: false, hasMin: false, hasMax: false, hasUnits: false,
       hasDecimalPlaces: false, hasValuesEditor: false,
-      preview: { select: 0, radio: 0, checkbox: 0, textarea: 0, textbox: 0, yesNoButtons: 0, datePlaceholder: false, timePlaceholder: false },
+      preview: { select: 0, radio: 0, checkbox: 0, textarea: 0, textbox: 0, yesNoButtons: 0, datePlaceholder: false, timePlaceholder: false, datetimeInput: 0 },
       appearedCount: appearedAffs.length,
     };
     const labelled = appearedAffs.filter((a) => a.name);
@@ -112,15 +112,35 @@
       else if (a.kind === 'checkbox') facets.preview.checkbox++;
       else if (a.kind === 'textarea') facets.preview.textarea++;
       else if (a.kind === 'textbox') {
-        facets.preview.textbox++;
-        if (dateish) facets.preview.datePlaceholder = true;
-        if (timeish) facets.preview.timePlaceholder = true;
+        if (a.inputType === 'datetime-local') {
+          facets.preview.datetimeInput++;
+          facets.preview.datePlaceholder = true;
+          facets.preview.timePlaceholder = true;
+        } else {
+          facets.preview.textbox++;
+          if (dateish) facets.preview.datePlaceholder = true;
+          if (timeish) facets.preview.timePlaceholder = true;
+        }
       } else if (a.kind === 'button' && /^(yes|no|true|false|on|off)$/i.test(a.name.trim())) {
         facets.preview.yesNoButtons++;
       }
       if (a.inputType === 'date') facets.preview.datePlaceholder = true;
       if (a.inputType === 'time') facets.preview.timePlaceholder = true;
-      if (a.inputType === 'datetime-local') { facets.preview.datePlaceholder = true; facets.preview.timePlaceholder = true; }
+    }
+    return facets;
+  }
+
+  /** Merge preview evidence from the whole post-click snapshot (full re-renders). */
+  function mergeLivePreview(facets, afterAffs) {
+    if (!afterAffs) return facets;
+    for (const a of afterAffs) {
+      if (a.explicitLabel) continue;
+      if (a.inputType === 'datetime-local') {
+        facets.preview.datetimeInput++;
+        facets.preview.datePlaceholder = true;
+        facets.preview.timePlaceholder = true;
+      } else if (a.inputType === 'date') facets.preview.datePlaceholder = true;
+      else if (a.inputType === 'time') facets.preview.timePlaceholder = true;
     }
     return facets;
   }
@@ -146,9 +166,11 @@
         bump(scores, ['single_select', 'multi_select', 'radio'], 6);
         penalize(scores, ['checkbox', 'boolean', 'text', 'textarea'], 5);
         evidence.push('probe: a coded values editor appeared');
-        if (facets.preview.select > 0) { bump(scores, ['single_select'], 4); evidence.push('probe: preview renders a dropdown control'); }
-        if (facets.preview.radio > 0) { bump(scores, ['radio'], 5); evidence.push('probe: preview renders radio inputs'); }
-        if (facets.preview.checkbox > 0) { bump(scores, ['multi_select'], 5); evidence.push('probe: preview renders checkbox inputs'); }
+        // Preview control type is the strongest discriminator among coded types.
+        if (facets.preview.radio > 0) { bump(scores, ['radio'], 8); penalize(scores, ['single_select', 'multi_select'], 4); evidence.push('probe: preview renders radio inputs'); }
+        else if (facets.preview.select > 0) { bump(scores, ['single_select'], 8); penalize(scores, ['multi_select', 'radio'], 4); evidence.push('probe: preview renders a dropdown control'); }
+        else if (facets.preview.checkbox > 1) { bump(scores, ['multi_select'], 8); penalize(scores, ['single_select', 'radio'], 4); evidence.push('probe: preview renders multiple checkbox inputs'); }
+        else if (facets.preview.checkbox === 1) { bump(scores, ['checkbox'], 6); penalize(scores, ['single_select', 'multi_select'], 3); evidence.push('probe: preview renders a single tick box'); }
       } else {
         penalize(scores, ['single_select', 'multi_select', 'radio'], 5);
         if (facets.preview.checkbox === 1 && !numeric && !facets.hasFormula) {
@@ -157,7 +179,8 @@
         }
         if (facets.preview.yesNoButtons >= 2) { bump(scores, ['boolean'], 6); evidence.push('probe: preview renders yes/no controls'); }
         if (facets.preview.textarea > 0) { bump(scores, ['textarea'], 5); evidence.push('probe: preview renders a multi-line text control'); }
-        if (facets.preview.datePlaceholder && facets.preview.timePlaceholder) { bump(scores, ['datetime'], 6); evidence.push('probe: preview hints at date and time entry'); }
+        if (facets.preview.datetimeInput > 0) { bump(scores, ['datetime'], 12); penalize(scores, ['date', 'time', 'text'], 6); evidence.push('probe: preview renders a datetime-local input'); }
+        else if (facets.preview.datePlaceholder && facets.preview.timePlaceholder) { bump(scores, ['datetime'], 8); penalize(scores, ['text', 'date', 'time'], 4); evidence.push('probe: preview hints at date and time entry'); }
         else if (facets.preview.datePlaceholder) { bump(scores, ['date'], 5); evidence.push('probe: preview hints at date entry'); }
         else if (facets.preview.timePlaceholder) { bump(scores, ['time'], 5); evidence.push('probe: preview hints at time entry'); }
       }
@@ -173,5 +196,5 @@
   function bump(scores, types, amount) { for (const t of types) scores[t] += amount; }
   function penalize(scores, types, amount) { for (const t of types) scores[t] -= amount; }
 
-  NS.mapper = { CANONICAL_TYPES, discoverPalette, readFacets, classify };
+  NS.mapper = { CANONICAL_TYPES, discoverPalette, readFacets, mergeLivePreview, classify };
 })();

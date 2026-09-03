@@ -134,6 +134,8 @@
             calibrated = true;
           }
 
+          await flows.cleanupSentinel(ctx);
+
           // Idempotency: if the form already holds this content, audit instead of rebuilding.
           const alreadyBuilt = form.fields.length > 0 && flows.findFieldText(ctx.doc, form.fields[0].label).length > 0;
           if (!alreadyBuilt) {

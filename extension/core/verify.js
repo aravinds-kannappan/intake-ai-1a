@@ -153,9 +153,7 @@
         if (issue.kind !== 'missing') {
           // Wrong type: remove the element, then rebuild it from scratch.
           if (await flows.selectFieldCard(ctx, field.label)) {
-            const del = flows.conceptPick(flows.buttons(flows.snap(ctx)), [{ name: 'remove' }])
-              .filter((c) => lexicon.scoreConcept(c.aff.name, 'form') <= 0)[0];
-            if (del) await flows.clickAff(ctx, del.aff, 'remove mistyped element before rebuild');
+            await flows.deleteSelectedElement(ctx, field.label);
           }
         }
         await flows.buildField(ctx, field, issue.irPath);
