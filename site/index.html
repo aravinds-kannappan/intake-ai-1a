@@ -66,7 +66,7 @@ a { color:var(--accent); }
   </div>
 
   <h2>The human gate</h2>
-  <p>The agent never guesses silently. Low-confidence type mappings, missing controls (no repeating toggle, no visible range inputs), skip-logic controllers it cannot find, and audit mismatches that survive a repair round all pause the run and surface a card with the question, the evidence, and concrete options. Confident work proceeds automatically; on the two mocks in this repo a full clean run needs zero interventions, so the reviewer only ever sees real problems.</p>
+  <p>The agent never guesses silently. After it probes the palette and verifies Save, it always pauses on a calibration card (learned type map + save control) until you Accept. Low-confidence type mappings, missing controls, skip-logic controllers it cannot find, and audit mismatches that survive a repair round also pause with evidence. On the live demo, leave Hands-free unchecked or those cards are auto-accepted.</p>
 
   <h2>Evidence that it generalizes</h2>
   <p>Mock B is a second eSource I wrote to be different everywhere: encounters instead of visits, instruments instead of source documents, a Question Palette with names like "Tally Counter" and "Moment Picker", card layouts with <code>role="button"</code> divs instead of tables and buttons, modal dialogs, a "Commit Changes" save with a fake "Store Draft Locally" beside it, and a full re-render on every interaction. The same extension, same input file, no code changes:</p>
